@@ -1,4 +1,4 @@
-import 'package:flutter/material';
+import 'package:flutter/material.dart';
 import 'package:mobile/models/flashcard.dart';
 import 'package:mobile/services/storage_service.dart';
 import 'package:mobile/services/sync_service.dart';

@@ -1,5 +1,5 @@
 import 'dart:io';
-import 'package:flutter/material';
+import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_math_fork/flutter_math.dart';
 import 'package:path/path.dart' as p;
@@ -27,12 +27,22 @@ class _CardViewState extends State<CardView> {
   }
 
   Future<void> _loadContent() async {
-    final content = await StorageService().getCardMarkdownContent(widget.card);
-    if (mounted) {
-      setState(() {
-        _markdownContent = content;
-        _isLoading = false;
-      });
+    try {
+      final content = await StorageService().getCardMarkdownContent(widget.card);
+      if (mounted) {
+        setState(() {
+          _markdownContent = content;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      print("Error loading card markdown: $e");
+      if (mounted) {
+        setState(() {
+          _markdownContent = "Error loading content: $e";
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -54,7 +64,7 @@ class _CardViewState extends State<CardView> {
                 scrollDirection: Axis.horizontal,
                 child: Math.tex(
                   part,
-                  style: const TextStyle(fontSize: 18, color: Colors.white),
+                  textStyle: const TextStyle(fontSize: 18, color: Colors.white),
                   onErrorFallback: (err) => Text(part, style: const TextStyle(color: Colors.red)),
                 ),
               ),
@@ -84,7 +94,7 @@ class _CardViewState extends State<CardView> {
               alignment: PlaceholderAlignment.middle,
               child: Math.tex(
                 part,
-                style: const TextStyle(fontSize: 15, color: Colors.white),
+                textStyle: const TextStyle(fontSize: 15, color: Colors.white),
                 onErrorFallback: (err) => Text(part, style: const TextStyle(color: Colors.red)),
               ),
             ),
@@ -114,19 +124,45 @@ class _CardViewState extends State<CardView> {
         code: const TextStyle(backgroundColor: Colors.black38, fontFamily: 'monospace'),
       ),
       imageBuilder: (uri, title, alt) {
-        // Resolve assets/page_X_img_Y.png relative to folderPath
-        final relativePath = uri.path;
+        // Decode and sanitize relative path
+        String relativePath = Uri.decodeComponent(uri.path);
+        
+        // Strip leading slash or relative dots so path.join treats it as relative
+        while (relativePath.startsWith('/')) {
+          relativePath = relativePath.substring(1);
+        }
+        if (relativePath.startsWith('./')) {
+          relativePath = relativePath.substring(2);
+        }
+
         final absolutePath = p.join(folderPath, relativePath);
         final file = File(absolutePath);
 
         if (file.existsSync()) {
-          return Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Image.file(
-                file,
-                fit: BoxFit.contain,
+          return GestureDetector(
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => ImageZoomViewer(file: file),
+                ),
+              );
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  color: Colors.white, // Solid white background for transparent PDF assets
+                  padding: const EdgeInsets.all(8.0),
+                  child: Hero(
+                    tag: absolutePath,
+                    child: Image.file(
+                      file,
+                      fit: BoxFit.contain,
+                    ),
+                  ),
+                ),
               ),
             ),
           );
@@ -147,89 +183,89 @@ class _CardViewState extends State<CardView> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final cardHeight = MediaQuery.of(context).size.height * 0.6;
+    final screenSize = MediaQuery.of(context).size;
+    final cardWidth = screenSize.width * 0.92;
+    final cardHeight = screenSize.height * 0.85;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0B0F19), // Matches PC dark theme
-      appBar: AppBar(
-        title: const Text('Flashcard Review', style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        foregroundColor: Colors.white,
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
+      body: SafeArea(
+        child: Stack(
           children: [
-            Expanded(
-              child: Center(
-                child: GestureDetector(
-                  onTap: () => setState(() => _revealed = !_revealed),
-                  child: Container(
-                    width: double.infinity,
-                    height: cardHeight,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF111928).withOpacity(0.8), // Glass panel color
-                      borderRadius: BorderRadius.circular(24),
-                      border: Border.all(color: Colors.white.withOpacity(0.08)),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.3),
-                          blurRadius: 20,
-                          offset: const Offset(0, 10),
-                        ),
-                      ],
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(24),
-                      child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 300),
-                        transitionBuilder: (child, anim) {
-                          // Standard card flip animation
-                          final rotateAnim = Tween(begin: 3.14, end: 0.0).animate(anim);
-                          return AnimatedBuilder(
-                            animation: rotateAnim,
-                            child: child,
-                            builder: (context, widget) {
-                              final isBack = child.key == const ValueKey('back');
-                              final rotationValue = isBack ? rotateAnim.value : rotateAnim.value + 3.14;
-                              return Transform(
-                                transform: Matrix4.identity()
-                                  ..setEntry(3, 2, 0.001)
-                                  ..rotateY(rotationValue),
-                                alignment: Alignment.center,
-                                child: rotationValue >= 1.57 && rotationValue <= 4.71
-                                    ? const SizedBox() // Hide back face when flipping
-                                    : widget,
-                              );
-                            },
-                          );
-                        },
-                        child: !_revealed
-                            ? _buildFrontFace()
-                            : _buildBackFace(),
+            // Center card container
+            Center(
+              child: GestureDetector(
+                onTap: () => setState(() => _revealed = !_revealed),
+                child: Container(
+                  width: cardWidth,
+                  height: cardHeight,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF111928),
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(color: Colors.white.withOpacity(0.08)),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.4),
+                        blurRadius: 25,
+                        offset: const Offset(0, 12),
                       ),
+                    ],
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(24),
+                    child: AnimatedCrossFade(
+                      firstChild: _buildFrontFace(cardHeight, cardWidth),
+                      secondChild: _buildBackFace(cardHeight, cardWidth),
+                      crossFadeState: !_revealed
+                          ? CrossFadeState.showFirst
+                          : CrossFadeState.showSecond,
+                      duration: const Duration(milliseconds: 300),
+                      firstCurve: Curves.easeInOut,
+                      secondCurve: Curves.easeInOut,
+                      sizeCurve: Curves.easeInOut,
                     ),
                   ),
                 ),
               ),
             ),
-            const SizedBox(height: 20),
-            Text(
-              _revealed ? 'Tap card to hide answer' : 'Tap card to reveal answer',
-              style: TextStyle(color: Colors.grey[500], fontSize: 13),
+            // Floating back button on the top left
+            Positioned(
+              top: 16,
+              left: 16,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.black45,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white.withOpacity(0.1)),
+                ),
+                child: IconButton(
+                  icon: const Icon(Icons.arrow_back, color: Colors.white),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ),
             ),
-            const SizedBox(height: 12),
+            // Helper text at the bottom
+            Positioned(
+              bottom: 12,
+              left: 0,
+              right: 0,
+              child: Text(
+                _revealed ? 'Tap card to hide answer' : 'Tap card to reveal answer',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey[500], fontSize: 13),
+              ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildFrontFace() {
+  Widget _buildFrontFace(double cardHeight, double cardWidth) {
     return Container(
       key: const ValueKey('front'),
+      height: cardHeight,
+      width: cardWidth,
       padding: const EdgeInsets.all(32.0),
       alignment: Alignment.center,
       child: Column(
@@ -267,12 +303,11 @@ class _CardViewState extends State<CardView> {
     );
   }
 
-  Widget _buildBackFace() {
+  Widget _buildBackFace(double cardHeight, double cardWidth) {
     return Container(
       key: const ValueKey('back'),
-      // Keep alignment transformation corrected for Y rotation (horizontal flip)
-      transform: Matrix4.rotationY(3.14)..translate(-MediaQuery.of(context).size.width + 40, 0),
-      transformAlignment: Alignment.center,
+      height: cardHeight,
+      width: cardWidth,
       padding: const EdgeInsets.all(28.0),
       child: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -285,7 +320,7 @@ class _CardViewState extends State<CardView> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'Ref: ${widget.card.sourcePdf} (Line ${widget.card.pdfRefLine})',
+                        'Ref: ${widget.card.sourcePdf} (Page ${widget.card.pdfRefLine})',
                         style: TextStyle(color: Colors.grey[500], fontSize: 12, fontStyle: FontStyle.italic),
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -303,6 +338,55 @@ class _CardViewState extends State<CardView> {
                 ),
               ],
             ),
+    );
+  }
+}
+
+// Pinch-to-zoom Image Viewer with Hero transitions
+class ImageZoomViewer extends StatelessWidget {
+  final File file;
+
+  const ImageZoomViewer({Key? key, required this.file}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          Center(
+            child: InteractiveViewer(
+              minScale: 0.5,
+              maxScale: 4.0,
+              child: Container(
+                color: Colors.white, // Standard white background for PDF images
+                padding: const EdgeInsets.all(16.0),
+                child: Hero(
+                  tag: file.path,
+                  child: Image.file(
+                    file,
+                    fit: BoxFit.contain,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            top: 40,
+            left: 16,
+            child: Container(
+              decoration: const BoxDecoration(
+                color: Colors.black54,
+                shape: BoxShape.circle,
+              ),
+              child: IconButton(
+                icon: const Icon(Icons.close, color: Colors.white),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

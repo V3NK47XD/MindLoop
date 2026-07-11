@@ -40,7 +40,7 @@ class NotificationService {
 
     // 4. Initialize Plugin
     await _notificationsPlugin.initialize(
-      initializationSettings,
+      settings: initializationSettings,
       onDidReceiveNotificationResponse: (NotificationResponse response) {
         final String? payload = response.payload;
         if (payload != null && payload.isNotEmpty) {
@@ -97,14 +97,13 @@ class NotificationService {
       final scheduledTime = tz.TZDateTime.now(tz.local).add(Duration(hours: frequencyHours * i));
 
       await _notificationsPlugin.zonedSchedule(
-        i, // unique notification ID
-        'MindLoop Review!',
-        card.question, // Body contains the flashcard question
-        scheduledTime,
-        notificationDetails,
+        id: i,
+        title: 'MindLoop Review!',
+        body: card.question,
+        scheduledDate: scheduledTime,
+        notificationDetails: notificationDetails,
         androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-        uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
-        payload: card.id, // Click payload is the card's unique hash
+        payload: card.id,
       );
       print("Scheduled reminder #$i at $scheduledTime (Card: ${card.id})");
     }
@@ -119,6 +118,12 @@ class NotificationService {
       priority: Priority.high,
     );
     const NotificationDetails details = NotificationDetails(android: androidDetails);
-    await _notificationsPlugin.show(999, title, body, details, payload: payload);
+    await _notificationsPlugin.show(
+      id: 999,
+      title: title,
+      body: body,
+      notificationDetails: details,
+      payload: payload,
+    );
   }
 }

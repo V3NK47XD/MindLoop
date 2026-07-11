@@ -1,14 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/material.dart'; // For ChangeNotifier
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import 'package:mobile/models/flashcard.dart';
 import 'package:mobile/services/storage_service.dart';
+import 'package:crypto/crypto.dart';
 
-class SyncService {
+class SyncService extends ChangeNotifier {
   static final SyncService _instance = SyncService._internal();
   factory SyncService() => _instance;
   SyncService._internal();
@@ -21,10 +23,16 @@ class SyncService {
   String? _deviceId;
   String? _deviceName;
   bool _isSyncing = false;
+  
+  Timer? _pingTimer;
+  bool _isPcReachable = false;
+  int lastSyncedCount = 0;
 
   bool get isSyncing => _isSyncing;
   String? get serverIp => _serverIp;
   int? get serverPort => _serverPort;
+  bool get isPcReachable => _isPcReachable;
+  bool get isConnected => _serverIp != null && _serverPort != null && _isPcReachable;
 
   // Initialize service settings
   Future<void> init() async {
@@ -42,6 +50,42 @@ class SyncService {
       _deviceName = '${Platform.operatingSystem} Client';
       await prefs.setString('device_name', _deviceName!);
     }
+    
+    await checkPcConnection();
+    startPingTimer();
+  }
+
+  // Start periodic pings to verify if PC server is alive
+  void startPingTimer() {
+    _pingTimer?.cancel();
+    _pingTimer = Timer.periodic(const Duration(seconds: 4), (timer) async {
+      await checkPcConnection();
+    });
+  }
+
+  // Verification request to server
+  Future<void> checkPcConnection() async {
+    if (_serverIp == null || _serverPort == null) {
+      if (_isPcReachable) {
+        _isPcReachable = false;
+        notifyListeners();
+      }
+      return;
+    }
+    try {
+      final uri = Uri.parse("http://$_serverIp:$_serverPort/api/pairing/devices");
+      final response = await http.get(uri).timeout(const Duration(seconds: 1));
+      final reachable = (response.statusCode == 200);
+      if (_isPcReachable != reachable) {
+        _isPcReachable = reachable;
+        notifyListeners();
+      }
+    } catch (_) {
+      if (_isPcReachable) {
+        _isPcReachable = false;
+        notifyListeners();
+      }
+    }
   }
 
   // Set pairing configuration manually
@@ -51,15 +95,33 @@ class SyncService {
     _serverPort = port;
     await prefs.setString('server_ip', ip);
     await prefs.setInt('server_port', port);
+    await checkPcConnection();
+    notifyListeners();
   }
 
   // Disconnect / Clear pairing
   Future<void> disconnect() async {
+    if (_serverIp != null && _serverPort != null && _deviceId != null) {
+      try {
+        final uri = Uri.parse("http://$_serverIp:$_serverPort/api/pairing/disconnect/$_deviceId");
+        await http.post(uri).timeout(const Duration(seconds: 1));
+      } catch (e) {
+        // ignore
+      }
+    }
     final prefs = await SharedPreferences.getInstance();
     _serverIp = null;
     _serverPort = null;
+    _isPcReachable = false;
     await prefs.remove('server_ip');
     await prefs.remove('server_port');
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _pingTimer?.cancel();
+    super.dispose();
   }
 
   // 1. Discovery & Pairing Flow
@@ -72,13 +134,19 @@ class SyncService {
 
       // Step A: Attempt UDP Broadcast discovery
       String? foundIp = await _discoverServerViaUdp(pairingCode, port);
+      bool paired = false;
       
-      // Step B: If UDP fails, fall back to sweeping TCP IP list
-      if (foundIp == null) {
+      if (foundIp != null) {
+        paired = await _runPairingHandshake(foundIp, port, pairingCode);
+      }
+      
+      // Step B: If UDP fails or handshake fails, fall back to sweeping TCP IP list
+      if (!paired) {
         foundIp = await _sweepIpsForPairing(ips.cast<String>(), port, pairingCode);
+        paired = (foundIp != null);
       }
 
-      if (foundIp != null) {
+      if (paired && foundIp != null) {
         await _saveConnection(foundIp, port);
         // Sync libraries immediately upon successful pairing
         triggerSyncCycle();
@@ -142,30 +210,35 @@ class SyncService {
     }
   }
 
+  // Run the HTTP pairing handshake to register with the PC
+  Future<bool> _runPairingHandshake(String ip, int port, String pairingCode) async {
+    try {
+      final uri = Uri.parse("http://$ip:$port/api/pairing/pair");
+      final response = await http.post(
+        uri,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          "pairing_code": pairingCode,
+          "device_id": _deviceId,
+          "device_name": _deviceName,
+          "client_ip": "127.0.0.1" // Will be overwritten by FastAPI client host address
+        }),
+      ).timeout(const Duration(seconds: 2));
+
+      return response.statusCode == 200;
+    } catch (e) {
+      return false;
+    }
+  }
+
   // Iterate over IPs to pair
   Future<String?> _sweepIpsForPairing(List<String> ips, int port, String pairingCode) async {
     for (String ip in ips) {
-      try {
-        print("Sweeping connection target: http://$ip:$port/api/pairing/pair");
-        final uri = Uri.parse("http://$ip:$port/api/pairing/pair");
-        final response = await http.post(
-          uri,
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({
-            "pairing_code": pairingCode,
-            "device_id": _deviceId,
-            "device_name": _deviceName,
-            "client_ip": "127.0.0.1" // Will be overwritten by FastAPI client host address
-          }),
-        ).timeout(const Duration(seconds: 1));
-
-        if (response.statusCode == 200) {
-          print("Handshake success with PC at $ip");
-          return ip;
-        }
-      } catch (e) {
-        // Timeout or unreachable IP, move to next
-        continue;
+      print("Sweeping connection target: http://$ip:$port/api/pairing/pair");
+      final success = await _runPairingHandshake(ip, port, pairingCode);
+      if (success) {
+        print("Handshake success with PC at $ip");
+        return ip;
       }
     }
     return null;
@@ -198,6 +271,7 @@ class SyncService {
       if (pendingResp.statusCode == 200) {
         final Map<String, dynamic> data = jsonDecode(pendingResp.body);
         final List<dynamic> pendingHashes = data['pending_hashes'] ?? [];
+        lastSyncedCount = pendingHashes.length;
         print("Sync queue has ${pendingHashes.length} cards to download.");
 
         for (String cardHash in pendingHashes.cast<String>()) {
@@ -208,6 +282,7 @@ class SyncService {
       print("Sync cycle failed: $e");
     } finally {
       _isSyncing = false;
+      notifyListeners();
     }
   }
 
@@ -218,18 +293,25 @@ class SyncService {
       final response = await http.get(downloadUrl);
 
       if (response.statusCode == 200) {
+        final bytes = response.bodyBytes;
+        // Compute SHA256 checksum of the downloaded file bytes
+        final checksum = sha256.convert(bytes).toString();
+
         // Save bytes as temporary zip file
         final tempDir = await getTemporaryDirectory();
         final tempZipFile = File('${tempDir.path}/$cardHash.zip');
-        await tempZipFile.writeAsBytes(response.bodyBytes);
+        await tempZipFile.writeAsBytes(bytes);
 
         // Process and unzip
         await _storageService.importFlashcardFromZip(tempZipFile, cardHash);
         print("Successfully synced and unzipped card $cardHash");
 
-        // Notify backend of completion
-        final confirmUri = Uri.parse("http://$_serverIp:$_serverPort/api/sync/device/$_deviceId/complete/$cardHash");
-        await http.post(confirmUri);
+        // Notify backend of completion with checksum for file integrity verification
+        final confirmUri = Uri.parse("http://$_serverIp:$_serverPort/api/sync/device/$_deviceId/complete/$cardHash?checksum=$checksum");
+        final confirmResp = await http.post(confirmUri);
+        if (confirmResp.statusCode != 200) {
+          throw Exception("Integrity verification failed on PC server: ${confirmResp.body}");
+        }
       } else {
         print("Failed to download card $cardHash (Status: ${response.statusCode})");
       }

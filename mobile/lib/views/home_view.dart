@@ -1,4 +1,5 @@
-import 'package:flutter/material';
+import 'dart:math';
+import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:mobile/models/flashcard.dart';
 import 'package:mobile/services/storage_service.dart';
@@ -31,6 +32,19 @@ class _HomeViewState extends State<HomeView> {
     super.initState();
     _loadSettings();
     _refreshLibrary();
+    _syncService.addListener(_onSyncServiceChange);
+  }
+
+  @override
+  void dispose() {
+    _syncService.removeListener(_onSyncServiceChange);
+    super.dispose();
+  }
+
+  void _onSyncServiceChange() {
+    if (mounted) {
+      _refreshLibrary();
+    }
   }
 
   Future<void> _loadSettings() async {
@@ -51,15 +65,22 @@ class _HomeViewState extends State<HomeView> {
   }
 
   Future<void> _refreshLibrary() async {
+    if (!mounted) return;
     setState(() => _isLoading = true);
     
-    // Fetch all cards and tags from local database
-    final cards = await _storageService.searchCards(_searchQuery, filterTags: _selectedTags);
+    // Fetch all cards matching tags
+    final cards = await _storageService.searchCards('', filterTags: _selectedTags);
     final tags = await _storageService.getAllTags();
+
+    // Apply BM25 search ranking
+    List<Flashcard> finalCards = cards;
+    if (_searchQuery.trim().isNotEmpty) {
+      finalCards = BM25Searcher.search(cards, _searchQuery);
+    }
 
     if (mounted) {
       setState(() {
-        _cards = cards;
+        _cards = finalCards;
         _allTags = tags;
         _isLoading = false;
       });
@@ -68,7 +89,12 @@ class _HomeViewState extends State<HomeView> {
 
   Future<void> _handleSync() async {
     final scaffoldMessenger = ScaffoldMessenger.of(context);
-    scaffoldMessenger.showSnackBar(const SnackBar(content: Text('Starting Sync...')));
+    scaffoldMessenger.showSnackBar(
+      SnackBar(
+        content: const Text('Starting Sync...'),
+        backgroundColor: Colors.indigo[700],
+      ),
+    );
     
     await _syncService.triggerSyncCycle();
     
@@ -76,8 +102,15 @@ class _HomeViewState extends State<HomeView> {
     await _notificationService.rescheduleReminders(_frequencyHours);
     
     await _refreshLibrary();
+    
+    final count = _syncService.lastSyncedCount;
     scaffoldMessenger.showSnackBar(
-      const SnackBar(content: Text('Sync Complete!'), backgroundColor: Colors.green),
+      SnackBar(
+        content: Text(count > 0 
+          ? 'Sync Complete! Received $count new flashcard(s).' 
+          : 'Sync Complete! Library is up to date.'),
+        backgroundColor: Colors.green,
+      ),
     );
   }
 
@@ -214,9 +247,22 @@ class _HomeViewState extends State<HomeView> {
     final isPaired = _syncService.serverIp != null;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0B0F19),
       appBar: AppBar(
-        title: const Text('MindLoop', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 22)),
+        title: Row(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: Image.asset(
+                'assets/icon.png',
+                height: 32,
+                width: 32,
+                fit: BoxFit.cover,
+              ),
+            ),
+            const SizedBox(width: 12),
+            const Text('MindLoop', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 22)),
+          ],
+        ),
         backgroundColor: Colors.transparent,
         elevation: 0,
         foregroundColor: Colors.white,
@@ -235,75 +281,106 @@ class _HomeViewState extends State<HomeView> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // 1. Connection Status Card
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(18),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF111928),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.white.withOpacity(0.06)),
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      isPaired ? Icons.wifi_protected_setup : Icons.signal_wifi_off_outlined,
-                      color: isPaired ? theme.primaryColor : Colors.grey,
-                      size: 28,
+              Builder(
+                builder: (context) {
+                  final serverIp = _syncService.serverIp;
+                  final isConnected = _syncService.isConnected;
+                  
+                  IconData statusIcon = Icons.signal_wifi_off_outlined;
+                  Color statusColor = Colors.grey;
+                  String statusTitle = 'Not Connected';
+                  String statusDesc = 'Pair with PC QR code to sync cards';
+                  
+                  if (serverIp != null) {
+                    if (isConnected) {
+                      statusIcon = Icons.wifi_protected_setup;
+                      statusColor = theme.primaryColor;
+                      statusTitle = 'Connected to PC';
+                      statusDesc = 'Server: $serverIp:${_syncService.serverPort}';
+                    } else {
+                      statusIcon = Icons.cloud_off_rounded;
+                      statusColor = Colors.orangeAccent;
+                      statusTitle = 'PC Offline';
+                      statusDesc = 'Server unreachable. Check Wi-Fi or restart PC.';
+                    }
+                  }
+
+                  return Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(18),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF111928),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: statusColor.withOpacity(0.15)),
+                      boxShadow: [
+                        BoxShadow(
+                          color: statusColor.withOpacity(0.02),
+                          blurRadius: 10,
+                          spreadRadius: 1,
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            isPaired ? 'Connected to PC' : 'Not Connected',
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white),
+                    child: Row(
+                      children: [
+                        Icon(
+                          statusIcon,
+                          color: statusColor,
+                          size: 28,
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                statusTitle,
+                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                statusDesc,
+                                style: const TextStyle(color: Colors.grey, fontSize: 12),
+                              ),
+                            ],
                           ),
-                          const SizedBox(height: 2),
-                          Text(
-                            isPaired
-                                ? 'Server: ${_syncService.serverIp}:${_syncService.serverPort}'
-                                : 'Pair with PC QR code to sync cards',
-                            style: const TextStyle(color: Colors.grey, fontSize: 12),
+                        ),
+                        if (serverIp != null) ...[
+                          IconButton(
+                            icon: Icon(Icons.sync, color: isConnected ? Colors.white : Colors.grey),
+                            onPressed: isConnected ? _handleSync : null,
+                            tooltip: 'Synchronize',
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.link_off, color: Colors.redAccent),
+                            onPressed: () async {
+                              await _syncService.disconnect();
+                              setState(() {});
+                            },
+                            tooltip: 'Disconnect',
+                          ),
+                        ] else ...[
+                          ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: theme.primaryColor,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            onPressed: () async {
+                              final success = await Navigator.push(
+                                context,
+                                MaterialPageRoute(builder: (context) => const ScannerView()),
+                              );
+                              if (success == true) {
+                                setState(() {});
+                              }
+                            },
+                            child: const Text('Pair'),
                           ),
                         ],
-                      ),
+                      ],
                     ),
-                    if (isPaired) ...[
-                      IconButton(
-                        icon: const Icon(Icons.sync, color: Colors.white),
-                        onPressed: _handleSync,
-                        tooltip: 'Synchronize',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.link_off, color: Colors.redAccent),
-                        onPressed: () async {
-                          await _syncService.disconnect();
-                          setState(() {});
-                        },
-                        tooltip: 'Disconnect',
-                      ),
-                    ] else ...[
-                      ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: theme.primaryColor,
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        ),
-                        onPressed: () async {
-                          final success = await Navigator.push(
-                            context,
-                            MaterialPageRoute(builder: (context) => const ScannerView()),
-                          );
-                          if (success == true) {
-                            setState(() {});
-                          }
-                        },
-                        child: const Text('Pair'),
-                      ),
-                    ],
-                  ],
-                ),
+                  );
+                }
               ),
               const SizedBox(height: 20),
 
@@ -407,47 +484,90 @@ class _HomeViewState extends State<HomeView> {
                             itemCount: _cards.length,
                             itemBuilder: (context, idx) {
                               final card = _cards[idx];
-                              return Card(
-                                color: const Color(0xFF111928),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  side: BorderSide(color: Colors.white.withOpacity(0.04)),
-                                ),
-                                margin: const EdgeInsets.only(bottom: 10),
-                                child: ListTile(
-                                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                                  title: Text(
-                                    card.question,
-                                    style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.white),
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  subtitle: Padding(
-                                    padding: const EdgeInsets.only(top: 8.0),
-                                    child: Row(
-                                      children: [
-                                        Icon(Icons.description, size: 12, color: theme.primaryColor),
-                                        const SizedBox(width: 4),
-                                        Expanded(
-                                          child: Text(
-                                            card.sourcePdf,
-                                            style: TextStyle(color: Colors.grey[500], fontSize: 11),
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  trailing: const Icon(Icons.arrow_forward_ios, size: 14, color: Colors.grey),
-                                  onTap: () {
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(builder: (context) => CardView(card: card)),
-                                    );
-                                  },
-                                  onLongPress: () => _handleDeleteCard(card.id),
-                                ),
-                              );
+                               return Container(
+                                 margin: const EdgeInsets.only(bottom: 12),
+                                 decoration: BoxDecoration(
+                                   borderRadius: BorderRadius.circular(16),
+                                   gradient: LinearGradient(
+                                     colors: [
+                                       const Color(0xFF111928),
+                                       const Color(0xFF111928).withOpacity(0.85),
+                                     ],
+                                   ),
+                                   border: Border.all(
+                                     color: card.tags.isNotEmpty 
+                                         ? _getTagColor(card.tags.first).withOpacity(0.12)
+                                         : Colors.white.withOpacity(0.04),
+                                   ),
+                                   boxShadow: [
+                                     BoxShadow(
+                                       color: Colors.black.withOpacity(0.2),
+                                       blurRadius: 8,
+                                       offset: const Offset(0, 4),
+                                     ),
+                                   ],
+                                 ),
+                                 child: ListTile(
+                                   contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                   title: Text(
+                                     card.question,
+                                     style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.white),
+                                     maxLines: 2,
+                                     overflow: TextOverflow.ellipsis,
+                                   ),
+                                   subtitle: Padding(
+                                     padding: const EdgeInsets.only(top: 8.0),
+                                     child: Column(
+                                       crossAxisAlignment: CrossAxisAlignment.start,
+                                       children: [
+                                         Row(
+                                           children: [
+                                             Icon(Icons.description_outlined, size: 12, color: theme.colorScheme.secondary),
+                                             const SizedBox(width: 4),
+                                             Expanded(
+                                               child: Text(
+                                                 card.sourcePdf,
+                                                 style: TextStyle(color: Colors.grey[400], fontSize: 11, fontWeight: FontWeight.w500),
+                                                 overflow: TextOverflow.ellipsis,
+                                               ),
+                                             ),
+                                           ],
+                                         ),
+                                         if (card.tags.isNotEmpty) ...[
+                                           const SizedBox(height: 8),
+                                           Wrap(
+                                             spacing: 6,
+                                             runSpacing: 4,
+                                             children: card.tags.take(3).map((tag) {
+                                               final col = _getTagColor(tag);
+                                               return Container(
+                                                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                                 decoration: BoxDecoration(
+                                                   color: col.withOpacity(0.1),
+                                                   borderRadius: BorderRadius.circular(6),
+                                                   border: Border.all(color: col.withOpacity(0.2), width: 0.5),
+                                                 ),
+                                                 child: Text(
+                                                   '#$tag',
+                                                   style: TextStyle(color: col, fontSize: 10, fontWeight: FontWeight.w600),
+                                                 ),
+                                               );
+                                             }).toList(),
+                                           ),
+                                         ],
+                                       ],
+                                     ),
+                                   ),
+                                   trailing: const Icon(Icons.arrow_forward_ios, size: 14, color: Colors.grey),
+                                   onTap: () {
+                                     Navigator.push(
+                                       context,
+                                       MaterialPageRoute(builder: (context) => CardView(card: card)),
+                                     );
+                                   },
+                                   onLongPress: () => _handleDeleteCard(card.id),
+                                 ),
+                               );
                             },
                           ),
               ),
@@ -456,5 +576,88 @@ class _HomeViewState extends State<HomeView> {
         ),
       ),
     );
+  }
+
+  Color _getTagColor(String tag) {
+    final hash = tag.hashCode;
+    final colors = [
+      Colors.pinkAccent,
+      Colors.blueAccent,
+      Colors.greenAccent,
+      Colors.amberAccent,
+      Colors.deepOrangeAccent,
+      Colors.purpleAccent,
+      Colors.cyanAccent,
+    ];
+    return colors[hash.abs() % colors.length];
+  }
+}
+
+class BM25Searcher {
+  static List<Flashcard> search(List<Flashcard> documents, String query, {double k1 = 1.2, double b = 0.75}) {
+    if (query.trim().isEmpty) return documents;
+
+    List<String> tokenize(String text) {
+      return text.toLowerCase()
+          .replaceAll(RegExp(r'[^\w\s]'), '')
+          .split(RegExp(r'\s+'))
+          .where((token) => token.isNotEmpty)
+          .toList();
+    }
+
+    final queryTerms = tokenize(query);
+    if (queryTerms.isEmpty) return documents;
+
+    final N = documents.length;
+
+    final List<Map<String, dynamic>> docsData = documents.map((doc) {
+      final textToSearch = "${doc.question} ${doc.tags.join(' ')} ${doc.sourcePdf}";
+      final tokens = tokenize(textToSearch);
+      final Map<String, int> tf = {};
+      for (var token in tokens) {
+        tf[token] = (tf[token] ?? 0) + 1;
+      }
+      return {
+        "doc": doc,
+        "length": tokens.length,
+        "tf": tf
+      };
+    }).toList();
+
+    final double avgdl = docsData.fold<double>(0.0, (sum, d) => sum + d["length"]) / N;
+
+    final Map<String, int> df = {};
+    for (var term in queryTerms) {
+      df[term] = docsData.where((d) => (d["tf"] as Map<String, int>)[term] != null && (d["tf"] as Map<String, int>)[term]! > 0).length;
+    }
+
+    final Map<String, double> idf = {};
+    for (var term in queryTerms) {
+      final n = df[term] ?? 0;
+      idf[term] = log(((N - n + 0.5) / (n + 0.5)) + 1.0);
+    }
+
+    final List<Map<String, dynamic>> scoredDocs = docsData.map((d) {
+      double score = 0.0;
+      final tfMap = d["tf"] as Map<String, int>;
+      for (var term in queryTerms) {
+        final f = tfMap[term] ?? 0;
+        if (f > 0) {
+          final idfVal = idf[term] ?? 0.0;
+          final numerator = f * (k1 + 1.0);
+          final denominator = f + k1 * (1.0 - b + b * (d["length"] / avgdl));
+          score += idfVal * (numerator / denominator);
+        }
+      }
+      return {
+        "doc": d["doc"] as Flashcard,
+        "score": score
+      };
+    }).toList();
+
+    final filtered = scoredDocs.where((item) => item["score"] > 0.0).toList();
+    filtered.sort((a, b) => (b["score"] as double).compareTo(a["score"] as double));
+
+    return filtered.map((item) => item["doc"] as Flashcard).toList();
   }
 }

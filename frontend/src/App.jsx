@@ -20,12 +20,254 @@ import {
 
 const API_BASE = 'http://localhost:6769';
 
+// Markdown & LaTeX Renderers using global window.katex
+function MathBlock({ tex }) {
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    if (containerRef.current && window.katex) {
+      try {
+        window.katex.render(tex, containerRef.current, {
+          displayMode: true,
+          throwOnError: false
+        });
+      } catch (err) {
+        console.error("KaTeX error:", err);
+      }
+    }
+  }, [tex]);
+
+  return <div ref={containerRef} style={{ margin: '12px 0', overflowX: 'auto', textAlign: 'center' }} />;
+}
+
+function InlineMath({ tex }) {
+  const elRef = useRef(null);
+
+  useEffect(() => {
+    if (elRef.current && window.katex) {
+      try {
+        window.katex.render(tex, elRef.current, {
+          displayMode: false,
+          throwOnError: false
+        });
+      } catch (err) {
+        console.error("KaTeX error:", err);
+      }
+    }
+  }, [tex]);
+
+  return <span ref={elRef} style={{ padding: '0 2px' }} />;
+}
+
+function parseBold(txt) {
+  if (!txt) return "";
+  const boldParts = txt.split(/\*\*/g);
+  return boldParts.map((part, index) => {
+    if (index % 2 === 1) {
+      return <strong key={index} style={{ fontWeight: '600', color: '#fff' }}>{part}</strong>;
+    }
+    return part;
+  });
+}
+
+function FormattedText({ text, cardId }) {
+  const imgRegex = /!\[(.*?)\]\((.*?)\)/g;
+  const matches = [...text.matchAll(imgRegex)];
+  
+  if (matches.length > 0) {
+    const parts = [];
+    let lastIndex = 0;
+    
+    matches.forEach((match, idx) => {
+      const [fullMatch, alt, src] = match;
+      const matchIndex = match.index;
+      
+      if (matchIndex > lastIndex) {
+        parts.push(<span key={`t-${idx}`}>{parseBold(text.substring(lastIndex, matchIndex))}</span>);
+      }
+      
+      let resolvedSrc = src;
+      if (src.startsWith('assets/')) {
+        const filename = src.substring(7);
+        resolvedSrc = `${API_BASE}/api/cards/${cardId}/assets/${filename}`;
+      }
+      
+      parts.push(
+        <div key={`img-${idx}`} style={{ margin: '14px 0', textAlign: 'center' }}>
+          <img 
+            src={resolvedSrc} 
+            alt={alt} 
+            style={{ 
+              maxWidth: '100%', 
+              maxHeight: '280px',
+              borderRadius: '8px', 
+              border: '1px solid var(--panel-border)', 
+              boxShadow: '0 4px 16px rgba(0,0,0,0.2)' 
+            }} 
+          />
+          {alt && <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>{alt}</div>}
+        </div>
+      );
+      
+      lastIndex = matchIndex + fullMatch.length;
+    });
+    
+    if (lastIndex < text.length) {
+      parts.push(<span key="t-end">{parseBold(text.substring(lastIndex))}</span>);
+    }
+    
+    return <>{parts}</>;
+  }
+  
+  return <>{parseBold(text)}</>;
+}
+
+function InlineMarkdown({ text, cardId }) {
+  if (!text) return null;
+  const mathParts = text.split(/\$/g);
+  return (
+    <>
+      {mathParts.map((part, index) => {
+        if (index % 2 === 1) {
+          return <InlineMath key={index} tex={part} />;
+        }
+        return <FormattedText key={index} text={part} cardId={cardId} />;
+      })}
+    </>
+  );
+}
+
+function TextBlock({ text, cardId }) {
+  const lines = text.split('\n');
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      {lines.map((line, idx) => {
+        const trimmed = line.trim();
+        if (!trimmed) return <div key={idx} style={{ height: '4px' }} />;
+        
+        if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+          return (
+            <ul key={idx} style={{ margin: 0, paddingLeft: '20px' }}>
+              <li style={{ color: 'var(--text-main)' }}>
+                <InlineMarkdown text={trimmed.substring(2)} cardId={cardId} />
+              </li>
+            </ul>
+          );
+        }
+        
+        if (trimmed.startsWith('### ')) {
+          return <h4 key={idx} style={{ margin: '12px 0 4px', fontSize: '0.95rem', fontWeight: '600', color: '#fff' }}><InlineMarkdown text={trimmed.substring(4)} cardId={cardId} /></h4>;
+        }
+        if (trimmed.startsWith('## ')) {
+          return <h3 key={idx} style={{ margin: '16px 0 6px', fontSize: '1.1rem', fontWeight: '600', color: '#fff' }}><InlineMarkdown text={trimmed.substring(3)} cardId={cardId} /></h3>;
+        }
+        if (trimmed.startsWith('# ')) {
+          return <h2 key={idx} style={{ margin: '20px 0 8px', fontSize: '1.25rem', fontWeight: '700', color: '#fff' }}><InlineMarkdown text={trimmed.substring(2)} cardId={cardId} /></h2>;
+        }
+        
+        return (
+          <p key={idx} style={{ margin: 0, lineHeight: '1.5', color: 'var(--text-secondary)' }}>
+            <InlineMarkdown text={line} cardId={cardId} />
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+function MarkdownRenderer({ content, cardId }) {
+  if (!content) return null;
+  const parts = content.split(/\$\$/g);
+  return (
+    <div className="markdown-body">
+      {parts.map((part, index) => {
+        if (index % 2 === 1) {
+          return <MathBlock key={index} tex={part.trim()} />;
+        }
+        return <TextBlock key={index} text={part} cardId={cardId} />;
+      })}
+    </div>
+  );
+}
+
+// Simple, robust client-side BM25 ranker for searching questions + PDF sources
+function bm25Search(documents, query, k1 = 1.2, b = 0.75) {
+  if (!query || !query.trim()) return documents;
+
+  const tokenize = (text) => {
+    return text.toLowerCase()
+      .replace(/[^\w\s]/g, '')
+      .split(/\s+/)
+      .filter(token => token.length > 0);
+  };
+
+  const queryTerms = tokenize(query);
+  if (queryTerms.length === 0) return documents;
+
+  const N = documents.length;
+  
+  const docsData = documents.map(doc => {
+    const textToSearch = `${doc.question} ${doc.source_pdf || ''}`;
+    const tokens = tokenize(textToSearch);
+    const tf = {};
+    tokens.forEach(token => {
+      tf[token] = (tf[token] || 0) + 1;
+    });
+    return {
+      doc,
+      length: tokens.length,
+      tf
+    };
+  });
+
+  const avgdl = docsData.reduce((sum, d) => sum + d.length, 0) / N || 1;
+
+  const df = {};
+  queryTerms.forEach(term => {
+    df[term] = docsData.filter(d => d.tf[term] > 0).length;
+  });
+
+  const idf = {};
+  queryTerms.forEach(term => {
+    const n = df[term] || 0;
+    idf[term] = Math.log((N - n + 0.5) / (n + 0.5) + 1);
+  });
+
+  const scoredDocs = docsData.map(d => {
+    let score = 0;
+    queryTerms.forEach(term => {
+      const f = d.tf[term] || 0;
+      if (f > 0) {
+        const idfVal = idf[term];
+        const numerator = f * (k1 + 1);
+        const denominator = f + k1 * (1 - b + b * (d.length / avgdl));
+        score += idfVal * (numerator / denominator);
+      }
+    });
+    return {
+      doc: d.doc,
+      score
+    };
+  });
+
+  return scoredDocs
+    .filter(item => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map(item => item.doc);
+}
+
 function App() {
   // Library & Device state
   const [pcCards, setPcCards] = useState([]);
   const [phoneCards, setPhoneCards] = useState([]);
   const [pairedDevices, setPairedDevices] = useState([]);
   const [activeDevice, setActiveDevice] = useState(null);
+
+  // Sync ref to keep activeDevice state fresh inside long-polling watch closures
+  const activeDeviceRef = useRef(null);
+  useEffect(() => {
+    activeDeviceRef.current = activeDevice;
+  }, [activeDevice]);
   
   // Selection and Visibility
   const [selectedHashes, setSelectedHashes] = useState(new Set());
@@ -34,38 +276,154 @@ function App() {
   // Modals & Forms
   const [showPairModal, setShowPairModal] = useState(false);
   const [pairingInfo, setPairingInfo] = useState(null);
-  const [selectedModel, setSelectedModel] = useState('gemini-2.5-flash');
+  const [selectedModel, setSelectedModel] = useState('gemma-4-31b-it');
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationLogs, setGenerationLogs] = useState('');
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  
+  // Card viewer details modal
+  const [selectedCard, setSelectedCard] = useState(null);
+  const [cardContent, setCardContent] = useState(null);
+  const [isLoadingContent, setIsLoadingContent] = useState(false);
+  
+  // Search & Generator Modal states
+  const [showGeneratorModal, setShowGeneratorModal] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedFilterTag, setSelectedFilterTag] = useState('All');
   
   // File drag & drop
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef(null);
 
-  // Poll for paired devices and compare status
+  // Compute unique tags from PC cards
+  const allTags = React.useMemo(() => {
+    const tags = new Set();
+    pcCards.forEach(c => {
+      if (c.tags) {
+        c.tags.forEach(t => tags.add(t));
+      }
+    });
+    return Array.from(tags);
+  }, [pcCards]);
+
+  // Filtered PC cards
+  const filteredPcCards = React.useMemo(() => {
+    let cards = pcCards;
+    
+    // Apply synced/unsynced filter
+    if (!showSyncedCards) {
+      cards = cards.filter(c => c.sync_status !== 'synced');
+    }
+    
+    // Apply BM25 search ranking
+    if (searchQuery.trim()) {
+      cards = bm25Search(cards, searchQuery);
+    }
+    
+    // Apply tag filter
+    if (selectedFilterTag && selectedFilterTag !== "All") {
+      cards = cards.filter(c => c.tags && c.tags.includes(selectedFilterTag));
+    }
+    
+    return cards;
+  }, [pcCards, searchQuery, selectedFilterTag, showSyncedCards]);
+
+  // Fetch card content (markdown answer) when a card is clicked
+  useEffect(() => {
+    if (selectedCard) {
+      fetchCardContent(selectedCard.id);
+    } else {
+      setCardContent(null);
+    }
+  }, [selectedCard]);
+
+  const fetchCardContent = async (hash) => {
+    setIsLoadingContent(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/cards/${hash}/content`);
+      if (res.ok) {
+        const data = await res.json();
+        setCardContent(data);
+      } else {
+        console.error("Failed to fetch card content");
+      }
+    } catch (err) {
+      console.error("Network error fetching card content:", err);
+    } finally {
+      setIsLoadingContent(false);
+    }
+  };
+
+  // Load initial PC data and check pairing
   useEffect(() => {
     fetchPcLibrary();
     fetchPairedDevices();
 
-    const interval = setInterval(() => {
-      fetchPairedDevices();
-    }, 3000);
-
-    return () => clearInterval(interval);
+    // Set up long polling watch listener for real-time pairing/sync updates
+    let activeWatch = true;
+    const watchDevices = async () => {
+      while (activeWatch) {
+        try {
+          const res = await fetch(`${API_BASE}/api/pairing/watch?timeout=25`);
+          if (!activeWatch) break;
+          if (res.ok) {
+            const data = await res.json();
+            setPairedDevices(data);
+            
+            // Auto-select active device or first device from fresh list
+            let nextActive = null;
+            if (data.length > 0) {
+              const currentActive = activeDeviceRef.current;
+              const stillExists = data.find(d => currentActive && d.device_id === currentActive.device_id);
+              nextActive = stillExists || data[0];
+            }
+            
+            setActiveDevice(nextActive);
+            
+            // Trigger comparison update immediately using the active device ID
+            if (nextActive) {
+              fetchComparison(nextActive.device_id);
+            } else {
+              setPhoneCards([]);
+            }
+          }
+        } catch (err) {
+          console.error("Watch failed, retrying in 5s...", err);
+          await new Promise(resolve => setTimeout(resolve, 5000));
+        }
+      }
+    };
+    
+    watchDevices();
+    
+    return () => {
+      activeWatch = false;
+    };
   }, []);
 
-  // Fetch comparison when active device changes or periodically
+  // Fetch comparison when active device changes
   useEffect(() => {
     if (activeDevice) {
       fetchComparison();
-      const compareInterval = setInterval(() => {
-        fetchComparison();
-      }, 2500);
-      return () => clearInterval(compareInterval);
     } else {
       setPhoneCards([]);
     }
   }, [activeDevice]);
+
+  const handleRefreshAll = async () => {
+    setIsRefreshing(true);
+    try {
+      await Promise.all([
+        fetchPcLibrary(),
+        fetchPairedDevices(),
+        activeDevice ? fetchComparison() : Promise.resolve()
+      ]);
+    } catch (err) {
+      console.error("Refresh failed:", err);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   const fetchPcLibrary = async () => {
     try {
@@ -96,10 +454,11 @@ function App() {
     }
   };
 
-  const fetchComparison = async () => {
-    if (!activeDevice) return;
+  const fetchComparison = async (deviceId = null) => {
+    const targetId = deviceId || (activeDeviceRef.current ? activeDeviceRef.current.device_id : null);
+    if (!targetId) return;
     try {
-      const res = await fetch(`${API_BASE}/api/sync/device/${activeDevice.device_id}/compare`);
+      const res = await fetch(`${API_BASE}/api/sync/device/${targetId}/compare`);
       if (res.ok) {
         const data = await res.json();
         setPcCards(data.pc_cards || []);
@@ -263,8 +622,8 @@ function App() {
     <div className="app-container">
       {/* Header */}
       <header className="app-header glass-panel">
-        <div className="logo-container">
-          <Sparkles className="logo-icon" size={28} />
+        <div className="logo-container" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <img src="/icon.png" alt="MindLoop Logo" style={{ height: '32px', width: '32px', borderRadius: '6px' }} />
           <h1 className="logo-text">MindLoop</h1>
         </div>
         
@@ -282,6 +641,11 @@ function App() {
             </div>
           )}
 
+          <button className="btn btn-secondary" onClick={() => setShowGeneratorModal(true)} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Plus size={18} />
+            Generate Flashcards
+          </button>
+
           <button className="btn btn-primary" onClick={handleOpenPairing}>
             <Link size={18} />
             Pair Device
@@ -290,78 +654,7 @@ function App() {
       </header>
 
       {/* Main Grid */}
-      <div className="sync-grid">
-        {/* Left Card Creation & Upload */}
-        <section className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          <h2 style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '1.25rem' }}>
-            <FileText color="var(--primary)" />
-            PDF Card Generator
-          </h2>
-
-          <div style={{ display: 'flex', gap: '12px' }}>
-            <div style={{ flex: 1 }}>
-              <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '6px' }}>LLM Model</label>
-              <select 
-                className="btn btn-secondary" 
-                style={{ width: '100%', padding: '10px', background: 'rgba(255,255,255,0.02)' }}
-                value={selectedModel}
-                onChange={(e) => setSelectedModel(e.target.value)}
-              >
-                <option value="gemini-2.5-flash">Gemini 2.5 Flash (Fast, Multimodal)</option>
-                <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
-                <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
-                <option value="gemma2-27b-it">Gemma 2 27B IT</option>
-              </select>
-            </div>
-          </div>
-
-          {/* Drag and Drop Zone */}
-          <div 
-            className={`upload-zone ${dragActive ? 'active' : ''}`}
-            onDragEnter={handleDrag}
-            onDragOver={handleDrag}
-            onDragLeave={handleDrag}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current.click()}
-          >
-            <FileUp size={40} color={isGenerating ? 'var(--primary)' : 'var(--text-secondary)'} style={{ animation: isGenerating ? 'pulse 2s infinite' : 'none' }} />
-            {isGenerating ? (
-              <span style={{ fontWeight: '600' }}>Analyzing PDF with Gemini Multimodal AI...</span>
-            ) : (
-              <>
-                <span style={{ fontWeight: '600' }}>Drag & Drop PDF or Click to Browse</span>
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Supports text, figures, equations, diagrams</span>
-              </>
-            )}
-            <input 
-              type="file" 
-              ref={fileInputRef} 
-              style={{ display: 'none' }} 
-              accept=".pdf" 
-              onChange={handleFileChange}
-              disabled={isGenerating}
-            />
-          </div>
-
-          {/* Generator Logs */}
-          {generationLogs && (
-            <div style={{ 
-              background: 'rgba(0,0,0,0.3)', 
-              padding: '12px', 
-              borderRadius: '8px', 
-              fontSize: '0.8rem', 
-              fontFamily: 'JetBrains Mono, monospace',
-              color: 'var(--text-secondary)',
-              whiteSpace: 'pre-wrap',
-              maxHeight: '150px',
-              overflowY: 'auto',
-              border: '1px solid var(--panel-border)'
-            }}>
-              {generationLogs}
-            </div>
-          )}
-        </section>
-
+      <div style={{ padding: '0 24px 24px 24px', width: '100%' }}>
         {/* Sync Center Split Columns */}
         <section className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -372,6 +665,17 @@ function App() {
 
             {/* Controls */}
             <div style={{ display: 'flex', gap: '8px' }}>
+              <button 
+                className="btn btn-secondary" 
+                onClick={handleRefreshAll}
+                disabled={isRefreshing}
+                title="Refresh Libraries"
+                style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                <RefreshCw size={16} className={isRefreshing ? 'spin' : ''} style={{ animation: isRefreshing ? 'spin 1.2s linear infinite' : 'none' }} />
+                Refresh
+              </button>
+
               <button 
                 className="btn btn-secondary" 
                 onClick={() => setShowSyncedCards(!showSyncedCards)}
@@ -394,79 +698,124 @@ function App() {
             </div>
           </div>
 
-          {activeDevice ? (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', height: '550px' }}>
-              {/* PC Cards Side */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 4px' }}>
-                  <h3 style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>PC Storage ({visiblePcCards.length})</h3>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: '0.75rem', cursor: 'pointer', fontWeight: '600' }} onClick={selectAllUnsynced}>
-                      Select Unsynced
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', minHeight: '550px' }}>
+            {/* PC Cards Side */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 4px' }}>
+                <h3 style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>PC Storage ({filteredPcCards.length})</h3>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: '0.75rem', cursor: 'pointer', fontWeight: '600' }} onClick={selectAllUnsynced}>
+                    Select Unsynced
+                  </button>
+                  {selectedHashes.size > 0 && (
+                    <button style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '0.75rem', cursor: 'pointer' }} onClick={clearSelection}>
+                      Clear
                     </button>
-                    {selectedHashes.size > 0 && (
-                      <button style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '0.75rem', cursor: 'pointer' }} onClick={clearSelection}>
-                        Clear
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                <div className="cards-list">
-                  {visiblePcCards.length === 0 ? (
-                    <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>No cards to display.</div>
-                  ) : (
-                    visiblePcCards.map(card => (
-                      <div 
-                        key={card.id} 
-                        className={`flashcard-row ${selectedHashes.has(card.id) ? 'selected' : ''}`}
-                        onClick={() => card.sync_status !== 'synced' && toggleSelectCard(card.id)}
-                        style={{ cursor: card.sync_status === 'synced' ? 'default' : 'pointer' }}
-                      >
-                        <div className="card-title-area">
-                          <span className="card-question" title={card.question}>{card.question}</span>
-                          <div className="card-meta-tags">
-                            <span className="tag-badge primary">{card.source_pdf}</span>
-                            {card.tags.slice(0, 2).map((t, i) => (
-                              <span key={i} className="tag-badge">{t}</span>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }} onClick={e => e.stopPropagation()}>
-                          {card.sync_status === 'synced' ? (
-                            <CheckCircle2 color="var(--success)" size={18} title="Synced to phone" />
-                          ) : (
-                            <input 
-                              type="checkbox" 
-                              checked={selectedHashes.has(card.id)} 
-                              onChange={() => toggleSelectCard(card.id)}
-                              style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer' }}
-                            />
-                          )}
-                          <button 
-                            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
-                            onClick={() => handleDeleteCard(card.id)}
-                            className="hover-danger"
-                          >
-                            <Trash2 size={15} />
-                          </button>
-                        </div>
-                      </div>
-                    ))
                   )}
                 </div>
               </div>
 
-              {/* Phone Cards Side */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', borderLeft: '1px solid var(--panel-border)', paddingLeft: '16px' }}>
-                <h3 style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', padding: '0 4px' }}>Phone Storage ({visiblePhoneCards.length})</h3>
-                <div className="cards-list">
+              {/* Search & Tags Filters */}
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '4px' }}>
+                <input 
+                  type="text" 
+                  placeholder="Search question or PDF..." 
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  style={{ 
+                    flex: 1, 
+                    padding: '8px 12px', 
+                    borderRadius: '6px', 
+                    border: '1px solid var(--panel-border)', 
+                    background: 'rgba(255,255,255,0.02)',
+                    color: '#fff',
+                    fontSize: '0.8rem'
+                  }}
+                />
+                <select
+                  value={selectedFilterTag}
+                  onChange={(e) => setSelectedFilterTag(e.target.value)}
+                  style={{ 
+                    padding: '8px', 
+                    borderRadius: '6px', 
+                    border: '1px solid var(--panel-border)', 
+                    background: 'rgba(255,255,255,0.02)',
+                    color: '#fff',
+                    fontSize: '0.8rem',
+                    maxWidth: '120px'
+                  }}
+                >
+                  <option value="All">All Tags</option>
+                  {allTags.map((tag, idx) => (
+                    <option key={idx} value={tag}>{tag}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="cards-list" style={{ height: '480px', overflowY: 'auto' }}>
+                {filteredPcCards.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>No cards found.</div>
+                ) : (
+                  filteredPcCards.map(card => (
+                    <div 
+                      key={card.id} 
+                      className={`flashcard-row ${selectedHashes.has(card.id) ? 'selected' : ''}`}
+                      onClick={() => setSelectedCard(card)}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      <div className="card-title-area">
+                        <span className="card-question" title={card.question}>{card.question}</span>
+                        <div className="card-meta-tags">
+                          <span className="tag-badge primary">{card.source_pdf}</span>
+                          {card.tags && card.tags.slice(0, 2).map((t, i) => (
+                            <span key={i} className="tag-badge">{t}</span>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }} onClick={e => e.stopPropagation()}>
+                        {card.sync_status === 'synced' ? (
+                          <CheckCircle2 color="var(--success)" size={18} title="Synced to phone" />
+                        ) : (
+                          <input 
+                            type="checkbox" 
+                            checked={selectedHashes.has(card.id)} 
+                            onChange={() => toggleSelectCard(card.id)}
+                            style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                          />
+                        )}
+                        <button 
+                          style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+                          onClick={() => handleDeleteCard(card.id)}
+                          className="hover-danger"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Phone Cards Side (Right Column) */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', borderLeft: '1px solid var(--panel-border)', paddingLeft: '16px' }}>
+              <h3 style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', padding: '0 4px' }}>
+                Phone Storage {activeDevice ? `(${visiblePhoneCards.length})` : ''}
+              </h3>
+              
+              {activeDevice ? (
+                <div className="cards-list" style={{ height: '528px', overflowY: 'auto' }}>
                   {visiblePhoneCards.length === 0 ? (
                     <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>No cards synced to phone.</div>
                   ) : (
                     visiblePhoneCards.map(card => (
-                      <div key={card.id} className="flashcard-row" style={{ opacity: 0.85 }}>
+                      <div 
+                        key={card.id} 
+                        className="flashcard-row" 
+                        style={{ opacity: 0.85, cursor: 'pointer' }}
+                        onClick={() => setSelectedCard(card)}
+                      >
                         <div className="card-title-area">
                           <span className="card-question" title={card.question}>{card.question}</span>
                           <span className="tag-badge">Synced</span>
@@ -476,27 +825,30 @@ function App() {
                     ))
                   )}
                 </div>
-              </div>
+              ) : (
+                <div style={{ 
+                  flex: 1,
+                  display: 'flex', 
+                  flexDirection: 'column', 
+                  alignItems: 'center', 
+                  justifyContent: 'center', 
+                  color: 'var(--text-muted)',
+                  gap: '12px',
+                  background: 'rgba(255,255,255,0.01)',
+                  borderRadius: '12px',
+                  border: '1px dashed var(--panel-border)',
+                  padding: '40px',
+                  textAlign: 'center'
+                }}>
+                  <Smartphone size={40} color="var(--text-muted)" style={{ opacity: 0.5 }} />
+                  <p style={{ fontSize: '0.85rem', fontWeight: '500' }}>Phone Not Connected</p>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', maxWidth: '220px' }}>
+                    Pair your mobile app using the button in the header to synchronize flashcards.
+                  </p>
+                </div>
+              )}
             </div>
-          ) : (
-            <div style={{ 
-              height: '550px', 
-              display: 'flex', 
-              flexDirection: 'column', 
-              alignItems: 'center', 
-              justifyContent: 'center', 
-              color: 'var(--text-secondary)',
-              gap: '12px',
-              border: '1px dashed var(--panel-border)',
-              borderRadius: '12px'
-            }}>
-              <Smartphone size={48} color="var(--text-muted)" />
-              <p style={{ fontWeight: '500' }}>Please pair and connect your phone to synchronize flashcards.</p>
-              <button className="btn btn-secondary" onClick={handleOpenPairing}>
-                Pair Now
-              </button>
-            </div>
-          )}
+          </div>
         </section>
       </div>
 
@@ -537,6 +889,163 @@ function App() {
             <button className="btn btn-secondary" style={{ width: '100%' }} onClick={() => setShowPairModal(false)}>
               Close
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* PDF Generator Modal */}
+      {showGeneratorModal && (
+        <div className="modal-overlay" onClick={() => !isGenerating && setShowGeneratorModal(false)}>
+          <div className="modal-content glass-panel" style={{ maxWidth: '550px', width: '90%' }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '1.25rem', margin: 0, fontWeight: '700' }}>
+                <FileText color="var(--primary)" size={22} />
+                PDF Card Generator
+              </h3>
+              {!isGenerating && (
+                <button 
+                  style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '1.5rem', lineHeight: 1 }}
+                  onClick={() => setShowGeneratorModal(false)}
+                >
+                  &times;
+                </button>
+              )}
+            </div>
+
+            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '16px', textAlign: 'left' }}>
+              Upload any study PDF (lecture slides, notes, papers) and let the reasoning model extract cards containing mathematical text and visual assets automatically.
+            </p>
+
+            <div style={{ display: 'flex', gap: '12px', marginBottom: '16px', textAlign: 'left' }}>
+              <div style={{ flex: 1 }}>
+                <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '6px' }}>LLM Model</label>
+                <select 
+                  className="btn btn-secondary" 
+                  style={{ width: '100%', padding: '10px', background: 'rgba(255,255,255,0.02)' }}
+                  value={selectedModel}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                >
+                  <option value="gemma-4-31b-it">Gemma 4 31B IT (Reasoning, Default)</option>
+                  <option value="gemini-2.5-flash">Gemini 2.5 Flash (Fast, Multimodal)</option>
+                  <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                  <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Drag and Drop Zone */}
+            <div 
+              className={`upload-zone ${dragActive ? 'active' : ''}`}
+              onDragEnter={handleDrag}
+              onDragOver={handleDrag}
+              onDragLeave={handleDrag}
+              onDrop={handleDrop}
+              onClick={() => !isGenerating && fileInputRef.current.click()}
+              style={{ pointerEvents: isGenerating ? 'none' : 'auto', marginBottom: '16px' }}
+            >
+              <FileUp size={40} color={isGenerating ? 'var(--primary)' : 'var(--text-secondary)'} style={{ animation: isGenerating ? 'pulse 2s infinite' : 'none' }} />
+              {isGenerating ? (
+                <span style={{ fontWeight: '600', color: 'var(--primary)' }}>Analyzing PDF with Multimodal AI ({selectedModel})...</span>
+              ) : (
+                <>
+                  <span style={{ fontWeight: '600' }}>Drag & Drop PDF or Click to Browse</span>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Supports text, figures, equations, diagrams</span>
+                </>
+              )}
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                style={{ display: 'none' }} 
+                accept=".pdf" 
+                onChange={handleFileChange}
+                disabled={isGenerating}
+              />
+            </div>
+
+            {/* Generator Logs */}
+            {generationLogs && (
+              <div style={{ 
+                background: 'rgba(0,0,0,0.3)', 
+                padding: '12px', 
+                borderRadius: '8px', 
+                fontSize: '0.75rem', 
+                fontFamily: 'JetBrains Mono, monospace',
+                color: 'var(--text-secondary)',
+                whiteSpace: 'pre-wrap',
+                maxHeight: '120px',
+                overflowY: 'auto',
+                border: '1px solid var(--panel-border)',
+                textAlign: 'left',
+                marginBottom: '16px'
+              }}>
+                {generationLogs}
+              </div>
+            )}
+
+            <button 
+              className="btn btn-secondary" 
+              style={{ width: '100%' }} 
+              onClick={() => setShowGeneratorModal(false)}
+              disabled={isGenerating}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Flashcard Detail Modal */}
+      {selectedCard && (
+        <div className="modal-overlay" onClick={() => setSelectedCard(null)}>
+          <div className="modal-content glass-panel" style={{ maxWidth: '650px', textAlign: 'left', width: '90%' }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <span className="tag-badge primary" style={{ margin: 0 }}>
+                {selectedCard.source_pdf}
+              </span>
+              <button 
+                style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '1.5rem', lineHeight: 1 }}
+                onClick={() => setSelectedCard(null)}
+              >
+                &times;
+              </button>
+            </div>
+
+            <h3 style={{ fontSize: '1.2rem', fontWeight: '700', color: '#fff', marginBottom: '12px', lineHeight: 1.4 }}>
+              {selectedCard.question}
+            </h3>
+
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '20px' }}>
+              {selectedCard.tags && selectedCard.tags.map((t, i) => (
+                <span key={i} className="tag-badge">{t}</span>
+              ))}
+              {selectedCard.pdf_page && (
+                <span className="tag-badge" style={{ borderColor: 'var(--primary)', color: 'var(--primary)' }}>Page {selectedCard.pdf_page}</span>
+              )}
+            </div>
+
+            <div style={{ 
+              maxHeight: '380px', 
+              overflowY: 'auto', 
+              padding: '16px', 
+              background: 'rgba(0,0,0,0.2)', 
+              borderRadius: '8px',
+              border: '1px solid var(--panel-border)',
+              marginBottom: '20px'
+            }}>
+              {isLoadingContent ? (
+                <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)' }}>Loading flashcard details...</div>
+              ) : cardContent ? (
+                <MarkdownRenderer content={cardContent.answer} cardId={selectedCard.id} />
+              ) : (
+                <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)' }}>Failed to load flashcard.</div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button className="btn btn-secondary" onClick={() => setSelectedCard(null)}>
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}
