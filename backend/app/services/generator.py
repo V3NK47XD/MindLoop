@@ -20,7 +20,7 @@ class FlashcardGen(BaseModel):
         description="The back side of the flashcard, formatted in Markdown. Can include LaTeX formulas (use '$' for inline and '$$' for block math, e.g. $E=mc^2$). If referencing an image, use standard markdown: ![Diagram](assets/image_name.png) where image_name.png is from the page's Available Images list."
     )
     tags: list[str] = Field(
-        description="A list of relevant tags or topics for this flashcard."
+        description="A list of relevant tags or topics for this flashcard. Max Limit of 2 tags."
     )
     pdf_ref_line: int = Field(
         description="Approximate line number on the page where the content was found. Set to 0 if not identifiable."
@@ -110,10 +110,15 @@ def generate_flashcards_from_pdf(
     # 1. Initialize Gemini client
     client = genai.Client(api_key=api_key)
     
-    # 2. Upload PDF file to Gemini
-    logger.info(f"Uploading PDF {pdf_path.name} to Gemini API...")
-    uploaded_file = client.files.upload(file=pdf_path)
-    logger.info(f"PDF uploaded. File name: {uploaded_file.name}")
+    # Determine if model is text-only (Gemma)
+    is_text_only = "gemma" in model_name.lower()
+    
+    uploaded_file = None
+    if not is_text_only:
+        # 2. Upload PDF file to Gemini
+        logger.info(f"Uploading PDF {pdf_path.name} to Gemini API...")
+        uploaded_file = client.files.upload(file=pdf_path)
+        logger.info(f"PDF uploaded. File name: {uploaded_file.name}")
     
     # 3. Build image mappings prompt
     image_mapping_text = ""
@@ -123,44 +128,91 @@ def generate_flashcards_from_pdf(
             for img in page["images"]:
                 image_mapping_text += f" - {img}\n"
                 
-    prompt = f"""
+    if is_text_only:
+        pdf_text = ""
+        for page in pages_data:
+            pdf_text += f"\n--- PDF Page {page['page_num']} ---\n{page['text']}\n"
+            
+        prompt = f"""
+You are an expert educator. Your goal is to analyze the text of a PDF document and create high-quality study flashcards from it.
+
+Here is the extracted text content of the PDF:
+{pdf_text}
+
+Here is a list of pre-extracted image filenames matching specific pages in the PDF:
+{image_mapping_text}
+
+Instructions:
+1. Review the PDF text content, including all conceptual details, definitions, and equations.
+2. Generate comprehensive flashcards targeting important definitions, concepts, mathematical formulas, and visual diagrams.
+3. Limit the tags array for each flashcard to EXACTLY 2 tags (no more, no less). The tags should be concise single-word identifiers related to the topic.
+4. Ensure the question is clear, direct, and concise. The answer must be highly descriptive, detailed, and clear, explaining all relevant details, using formatting (bullet points, bold text) and LaTeX equations where appropriate.
+5. If a concept is best explained by a diagram, graph, or formula in the PDF:
+   - Identify which image filename (e.g. `page_3_img_1.png`) matches that graphic.
+   - Reference it inside the flashcard's `answer` markdown using standard relative path markdown format: `![Description](assets/page_3_img_1.png)`.
+   - Add that exact filename string to the `attachments` array.
+6. If a card does not require a visual asset, keep `attachments` empty.
+7. Format mathematical equations cleanly using LaTeX math notation:
+   - Use standard `$` for inline math (e.g. $E=mc^2$)
+   - Use `$$` for block display equations on their own lines.
+8. Provide output strictly matching the requested JSON schema.
+"""
+    else:
+        prompt = f"""
 You are an expert educator. Your goal is to analyze the attached PDF and create high-quality study flashcards from it.
 
 Here is a list of pre-extracted image filenames matching specific pages in the PDF:
 {image_mapping_text}
 
 Instructions:
-1. Visually review the PDF pages, including all text, formulas, diagrams, charts, and diagrams.
+1. Visually review the PDF pages, including all text, formulas, diagrams, charts, and drawings.
 2. Generate comprehensive flashcards targeting important definitions, concepts, mathematical formulas, and visual diagrams.
-3. If a concept is best explained by a diagram, graph, or formula in the PDF:
+3. Limit the tags array for each flashcard to EXACTLY 2 tags (no more, no less). The tags should be concise single-word identifiers related to the topic.
+4. Ensure the question is clear, direct, and concise. The answer must be highly descriptive, detailed, and clear, explaining all relevant details, using formatting (bullet points, bold text) and LaTeX equations where appropriate.
+5. If a concept is best explained by a diagram, graph, or formula in the PDF:
    - Identify which image filename (e.g. `page_3_img_1.png`) matches that graphic.
    - Reference it inside the flashcard's `answer` markdown using standard relative path markdown format: `![Description](assets/page_3_img_1.png)`.
    - Add that exact filename string to the `attachments` array.
-4. If a card does not require a visual asset, keep `attachments` empty.
-5. Format mathematical equations cleanly using LaTeX math notation:
+6. If a card does not require a visual asset, keep `attachments` empty.
+7. Format mathematical equations cleanly using LaTeX math notation:
    - Use standard `$` for inline math (e.g. $E=mc^2$)
    - Use `$$` for block display equations on their own lines.
-6. Provide output strictly matching the requested JSON schema.
+8. Provide output strictly matching the requested JSON schema.
 """
 
     try:
         logger.info(f"Invoking Gemini model {model_name}...")
+        # Build generator configuration
+        config_args = {
+            "response_mime_type": "application/json",
+            "response_schema": FlashcardListGen,
+        }
+        
+        # Add thinking configuration for reasoning models like gemma-4-31b-it
+        if "gemma-4" in model_name or "thinking" in model_name:
+            config_args["thinking_config"] = types.ThinkingConfig(
+                thinking_level="HIGH"
+            )
+        else:
+            config_args["temperature"] = 0.2
+            
+        logger.info(f"Invoking Gemini model {model_name} with config: {config_args}...")
+        
+        contents = [prompt] if is_text_only else [uploaded_file, prompt]
+        
         response = client.models.generate_content(
             model=model_name,
-            contents=[uploaded_file, prompt],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=FlashcardListGen,
-                temperature=0.2
-            )
+            contents=contents,
+            config=types.GenerateContentConfig(**config_args)
         )
         
-        # Clean up file on Gemini servers
-        try:
-            client.files.delete(name=uploaded_file.name)
-            logger.info("Cleaned up uploaded file from Gemini server.")
-        except Exception as cleanup_err:
-            logger.warning(f"Failed to delete uploaded file from Gemini server: {cleanup_err}")
+        # Clean up file on Gemini servers if uploaded
+        if uploaded_file:
+            try:
+                client.files.delete(name=uploaded_file.name)
+                logger.info("Cleaned up uploaded file from Gemini server.")
+            except Exception as cleanup_err:
+                logger.warning(f"Failed to delete uploaded file from Gemini server: {cleanup_err}")
             
         # 4. Parse response JSON
         raw_json = response.text
@@ -187,8 +239,9 @@ Instructions:
     except Exception as e:
         logger.error(f"Error during flashcard generation: {str(e)}", exc_info=True)
         # Attempt cleanup if something failed before deletion
-        try:
-            client.files.delete(name=uploaded_file.name)
-        except:
-            pass
+        if uploaded_file:
+            try:
+                client.files.delete(name=uploaded_file.name)
+            except:
+                pass
         raise e

@@ -89,7 +89,10 @@ def compare_libraries(device_id: str):
                 "id": card_hash,
                 "question": card["question"],
                 "created_at": card.get("created_at"),
-                "sync_status": "synced"
+                "sync_status": "synced",
+                "source_pdf": card.get("source_pdf"),
+                "tags": card.get("tags", []),
+                "pdf_page": card.get("pdf_page")
             })
             
     # Add items unique to phone (will lack full PC metadata context in memory, but show placeholder)
@@ -147,9 +150,29 @@ def download_card_file(card_hash: str):
         filename=f"{card_hash}.flash"
     )
 
+import hashlib
+from app.routers.pairing import notify_listeners
+
 @router.post("/device/{device_id}/complete/{card_hash}")
-def confirm_sync_complete(device_id: str, card_hash: str):
+def confirm_sync_complete(device_id: str, card_hash: str, checksum: str = None):
     """The mobile phone calls this to notify that it has successfully downloaded and saved the card."""
+    # Check file integrity using SHA256 checksum if provided by phone
+    file_path = settings.STORAGE_PATH / f"{card_hash}.flash"
+    if file_path.exists() and checksum:
+        sha256 = hashlib.sha256()
+        try:
+            with open(file_path, "rb") as f:
+                for byte_block in iter(lambda: f.read(4096), b""):
+                    sha256.update(byte_block)
+            server_checksum = sha256.hexdigest()
+            if checksum != server_checksum:
+                logger.error(f"Integrity check failed for {card_hash}: expected {server_checksum}, got {checksum}")
+                raise HTTPException(status_code=400, detail="File integrity check failed: Checksum mismatch")
+        except HTTPException:
+            raise
+        except Exception as err:
+            logger.warning(f"Failed to calculate server checksum for card {card_hash}: {err}")
+            
     # Remove from sync queue
     queue = device_sync_queues.get(device_id, [])
     if card_hash in queue:
@@ -161,4 +184,8 @@ def confirm_sync_complete(device_id: str, card_hash: str):
     device_libraries[device_id].add(card_hash)
     
     logger.info(f"Device {device_id} successfully synced card {card_hash}")
+    
+    # Notify React UI long-polling watch sessions of sync completion
+    notify_listeners()
+    
     return {"status": "success"}

@@ -28,8 +28,18 @@ class PairingState:
         self.paired_devices: Dict[str, DeviceSession] = {}
         self.udp_thread: threading.Thread = None
         self.stop_udp: threading.Event = threading.Event()
+        self.listeners = []
 
 pairing_state = PairingState()
+
+def notify_listeners():
+    """Trigger all active HTTP long-polling watch sessions to wake up."""
+    for event in pairing_state.listeners:
+        try:
+            event.set()
+        except Exception:
+            pass
+    pairing_state.listeners.clear()
 
 class PairRequest(BaseModel):
     pairing_code: str
@@ -117,11 +127,37 @@ def pair_device(req: PairRequest):
     )
     pairing_state.paired_devices[req.device_id] = session
     logger.info(f"Paired device {req.device_name} ({req.device_id}) at {req.client_ip}")
+    notify_listeners()
     return {"status": "success", "device_id": req.device_id}
 
 @router.get("/devices")
 def get_paired_devices():
     """List currently connected/paired mobile devices."""
+    return list(pairing_state.paired_devices.values())
+
+@router.post("/disconnect/{device_id}")
+def disconnect_device(device_id: str):
+    """The mobile phone calls this to disconnect itself from the PC."""
+    if device_id in pairing_state.paired_devices:
+        disconnected = pairing_state.paired_devices.pop(device_id)
+        logger.info(f"Disconnected device: {disconnected.device_name} ({device_id})")
+        notify_listeners()
+    return {"status": "success"}
+
+import asyncio
+
+@router.get("/watch")
+async def watch_devices(timeout: int = 25):
+    """Long polling watcher endpoint to wait for pairing/sync changes."""
+    event = asyncio.Event()
+    pairing_state.listeners.append(event)
+    try:
+        await asyncio.wait_for(event.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        pass
+    finally:
+        if event in pairing_state.listeners:
+            pairing_state.listeners.remove(event)
     return list(pairing_state.paired_devices.values())
 
 # UDP Listener for Broadcast Discovery
