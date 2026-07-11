@@ -1,0 +1,164 @@
+import zipfile
+import json
+import logging
+from pathlib import Path
+from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from typing import Dict, List, Set
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api/sync", tags=["sync"])
+
+# In-memory storage for device library states and sync queues
+# device_libraries: { device_id: set(card_hashes) }
+device_libraries: Dict[str, Set[str]] = {}
+
+# device_sync_queues: { device_id: list(card_hashes_to_sync) }
+device_sync_queues: Dict[str, List[str]] = {}
+
+class LibraryStateRequest(BaseModel):
+    card_hashes: List[str]
+
+class QueueSyncRequest(BaseModel):
+    card_hashes: List[str]
+
+def get_pc_library() -> List[dict]:
+    """Scans storage folder and extracts metadata from all .flash zip cards."""
+    cards = []
+    storage_path = settings.storage_path
+    
+    for path in storage_path.glob("*.flash"):
+        try:
+            with zipfile.ZipFile(path, "r") as zip_file:
+                metadata_str = zip_file.read("metadata.json").decode("utf-8")
+                metadata = json.loads(metadata_str)
+                # Ensure id matches base filename just in case
+                metadata["id"] = path.stem
+                cards.append(metadata)
+        except Exception as e:
+            logger.warning(f"Failed to read flashcard zip {path.name}: {e}")
+            
+    # Sort by creation time descending
+    cards.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return cards
+
+@router.post("/device/{device_id}/library")
+def update_device_library(device_id: str, req: LibraryStateRequest):
+    """The mobile phone calls this to upload its current list of card hashes."""
+    device_libraries[device_id] = set(req.card_hashes)
+    logger.info(f"Updated library state for device {device_id} with {len(req.card_hashes)} cards.")
+    
+    # Initialize queue for this device if not exists
+    if device_id not in device_sync_queues:
+        device_sync_queues[device_id] = []
+        
+    return {"status": "success", "count": len(req.card_hashes)}
+
+@router.get("/device/{device_id}/compare")
+def compare_libraries(device_id: str):
+    """
+    Returns side-by-side library states:
+    PC cards (with sync status) and Phone cards.
+    """
+    pc_cards = get_pc_library()
+    phone_hashes = device_libraries.get(device_id, set())
+    
+    # Enrich PC cards with sync status
+    enriched_pc_cards = []
+    for card in pc_cards:
+        card_hash = card["id"]
+        is_synced = card_hash in phone_hashes
+        
+        enriched_pc_cards.append({
+            **card,
+            "sync_status": "synced" if is_synced else "only_pc"
+        })
+        
+    # Also compile cards that are ONLY on the phone (if any exist, e.g. local edits/creation)
+    pc_hashes = {card["id"] for card in pc_cards}
+    only_phone_hashes = phone_hashes - pc_hashes
+    
+    phone_cards = []
+    # For common cards, we already show details on PC side, but list them for the comparison UI
+    for card in pc_cards:
+        card_hash = card["id"]
+        if card_hash in phone_hashes:
+            phone_cards.append({
+                "id": card_hash,
+                "question": card["question"],
+                "created_at": card.get("created_at"),
+                "sync_status": "synced"
+            })
+            
+    # Add items unique to phone (will lack full PC metadata context in memory, but show placeholder)
+    for p_hash in only_phone_hashes:
+        phone_cards.append({
+            "id": p_hash,
+            "question": "Local card on Phone",
+            "created_at": None,
+            "sync_status": "only_phone"
+        })
+        
+    return {
+        "pc_cards": enriched_pc_cards,
+        "phone_cards": phone_cards
+    }
+
+@router.post("/device/{device_id}/queue")
+def queue_cards_for_sync(device_id: str, req: QueueSyncRequest):
+    """PC React UI calls this to queue specific card hashes for transfer to the phone."""
+    if device_id not in device_sync_queues:
+        device_sync_queues[device_id] = []
+        
+    # Filter to avoid duplicate queueing and ensure cards exist on PC
+    storage_path = settings.storage_path
+    queued_set = set(device_sync_queues[device_id])
+    
+    added_count = 0
+    for card_hash in req.card_hashes:
+        file_path = storage_path / f"{card_hash}.flash"
+        if file_path.exists() and card_hash not in queued_set:
+            device_sync_queues[device_id].append(card_hash)
+            queued_set.add(card_hash)
+            added_count += 1
+            
+    logger.info(f"Queued {added_count} cards for device {device_id}. Total queued: {len(device_sync_queues[device_id])}")
+    return {"status": "success", "queued_count": len(device_sync_queues[device_id])}
+
+@router.get("/device/{device_id}/pending")
+def get_pending_syncs(device_id: str):
+    """The mobile phone polls this (or receives WS trigger) to get its transfer queue."""
+    pending = device_sync_queues.get(device_id, [])
+    return {"pending_hashes": pending}
+
+@router.get("/card/{card_hash}/download")
+def download_card_file(card_hash: str):
+    """The mobile phone requests download of a specific .flash ZIP archive."""
+    file_path = settings.storage_path / f"{card_hash}.flash"
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Card file not found")
+        
+    return FileResponse(
+        path=str(file_path),
+        media_type="application/zip",
+        filename=f"{card_hash}.flash"
+    )
+
+@router.post("/device/{device_id}/complete/{card_hash}")
+def confirm_sync_complete(device_id: str, card_hash: str):
+    """The mobile phone calls this to notify that it has successfully downloaded and saved the card."""
+    # Remove from sync queue
+    queue = device_sync_queues.get(device_id, [])
+    if card_hash in queue:
+        queue.remove(card_hash)
+        
+    # Mark as present in phone library
+    if device_id not in device_libraries:
+        device_libraries[device_id] = set()
+    device_libraries[device_id].add(card_hash)
+    
+    logger.info(f"Device {device_id} successfully synced card {card_hash}")
+    return {"status": "success"}
