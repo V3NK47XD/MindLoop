@@ -166,7 +166,7 @@ Instructions:
 10. Format flowcharts, process logic, system architecture, or state machines using clean Mermaid diagrams (e.g. ```mermaid\\ngraph TD\\n...\\n```). You MUST strictly adhere to basic, standard Mermaid syntax to ensure mobile and web parsers do not fail:
     - Stick to `graph TD` or `graph LR` for flowcharts, `sequenceDiagram` for sequences, and `pie` for pie charts.
     - Keep it extremely simple. Do NOT include CSS blocks, custom style definitions, or class assignments.
-    - Do NOT include any HTML tags (such as `<b>`, `<i>`, or `<br>`) inside node labels or shapes (e.g., do NOT write `A[<b>Start</b>]` or `A[Start<br>Line]`). Use only plain text inside node brackets, such as `A[Start]`, `B(Process)`, or `C{Decision}`.
+    - Do NOT include any HTML tags (such as `<b>`, `<i>`, or `<br>`) inside node labels or shapes (e.g., do NOT write `A[<b>Start</b>]` or `A[Start<br>Line]`). Use only plain text inside node brackets, such as `A[Start]`, `B(Process)`, or `C{{Decision}}`.
     - Keep edges simple: `A --> B` or `A -->|Label| B`.
 11. If there are web links or URLs in the text, do NOT wrap them in markdown link format (i.e. do NOT use `[anchor text](url)`). Keep them as raw, visible text links (e.g., `https://example.com/api`). Do not hide the URL behind custom markdown text.
 12. Provide output strictly matching the requested JSON schema.
@@ -198,7 +198,7 @@ Instructions:
 10. Format flowcharts, process logic, system architecture, or state machines using clean Mermaid diagrams (e.g. ```mermaid\\ngraph TD\\n...\\n```). You MUST strictly adhere to basic, standard Mermaid syntax to ensure mobile and web parsers do not fail:
     - Stick to `graph TD` or `graph LR` for flowcharts, `sequenceDiagram` for sequences, and `pie` for pie charts.
     - Keep it extremely simple. Do NOT include CSS blocks, custom style definitions, or class assignments.
-    - Do NOT include any HTML tags (such as `<b>`, `<i>`, or `<br>`) inside node labels or shapes (e.g., do NOT write `A[<b>Start</b>]` or `A[Start<br>Line]`). Use only plain text inside node brackets, such as `A[Start]`, `B(Process)`, or `C{Decision}`.
+    - Do NOT include any HTML tags (such as `<b>`, `<i>`, or `<br>`) inside node labels or shapes (e.g., do NOT write `A[<b>Start</b>]` or `A[Start<br>Line]`). Use only plain text inside node brackets, such as `A[Start]`, `B(Process)`, or `C{{Decision}}`.
     - Keep edges simple: `A --> B` or `A -->|Label| B`.
 11. If there are web links or URLs in the text, do NOT wrap them in markdown link format (i.e. do NOT use `[anchor text](url)`). Keep them as raw, visible text links (e.g., `https://example.com/api`). Do not hide the URL behind custom markdown text.
 12. Provide output strictly matching the requested JSON schema.
