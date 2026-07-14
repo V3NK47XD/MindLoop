@@ -231,17 +231,34 @@ class SyncService extends ChangeNotifier {
     }
   }
 
-  // Iterate over IPs to pair
+  // Sweep all IPs concurrently and return the first one that successfully registers
   Future<String?> _sweepIpsForPairing(List<String> ips, int port, String pairingCode) async {
+    final completer = Completer<String?>();
+    int completedCount = 0;
+    bool hasSuccess = false;
+    
+    if (ips.isEmpty) return null;
+    
     for (String ip in ips) {
-      print("Sweeping connection target: http://$ip:$port/api/pairing/pair");
-      final success = await _runPairingHandshake(ip, port, pairingCode);
-      if (success) {
-        print("Handshake success with PC at $ip");
-        return ip;
-      }
+      _runPairingHandshake(ip, port, pairingCode).then((success) {
+        if (success && !hasSuccess) {
+          hasSuccess = true;
+          completer.complete(ip);
+        } else {
+          completedCount++;
+          if (completedCount == ips.length && !hasSuccess) {
+            completer.complete(null);
+          }
+        }
+      }).catchError((_) {
+        completedCount++;
+        if (completedCount == ips.length && !hasSuccess) {
+          completer.complete(null);
+        }
+      });
     }
-    return null;
+    
+    return completer.future;
   }
 
   // 2. Main Sync Cycle

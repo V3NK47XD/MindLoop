@@ -206,6 +206,10 @@ class _CardViewState extends State<CardView> {
                   child: SingleChildScrollView(
                     child: SmoothMarkdown(
                       data: _markdownContent,
+                      config: const MarkdownConfig(
+                        enableLatex: true,
+                        enableCodeHighlight: true,
+                      ),
                       styleSheet: MarkdownStyleSheet(
                         paragraphStyle: TextStyle(color: textColor.withOpacity(0.85), fontSize: 16, height: 1.5, fontWeight: FontWeight.bold),
                         h1Style: TextStyle(color: textColor, fontWeight: FontWeight.w900),

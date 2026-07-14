@@ -5,7 +5,7 @@ import logging
 import uuid
 import io
 import qrcode
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Dict, List
@@ -113,20 +113,24 @@ def get_pairing_qr():
     return StreamingResponse(img_byte_arr, media_type="image/png")
 
 @router.post("/pair")
-def pair_device(req: PairRequest):
+def pair_device(req: PairRequest, request: Request):
     """Pair via HTTP POST fallback if UDP broadcast does not work or as final handshake."""
     if req.pairing_code != pairing_state.pairing_code:
         raise HTTPException(status_code=400, detail="Invalid pairing code")
         
+    client_ip = request.client.host if request.client else req.client_ip
+    if client_ip == "127.0.0.1" and req.client_ip != "127.0.0.1":
+        client_ip = req.client_ip
+
     import datetime
     session = DeviceSession(
         device_id=req.device_id,
         device_name=req.device_name,
-        ip=req.client_ip,
+        ip=client_ip,
         paired_at=datetime.datetime.utcnow().isoformat() + "Z"
     )
     pairing_state.paired_devices[req.device_id] = session
-    logger.info(f"Paired device {req.device_name} ({req.device_id}) at {req.client_ip}")
+    logger.info(f"Paired device {req.device_name} ({req.device_id}) at {client_ip}")
     notify_listeners()
     return {"status": "success", "device_id": req.device_id}
 
