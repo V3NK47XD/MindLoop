@@ -178,6 +178,7 @@ class _CardViewState extends State<CardView> {
   }
 
   Widget _buildBackFace(double cardHeight, double cardWidth, Color textColor, Color borderColor, Color panelBg) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Container(
       key: const ValueKey('back'),
       height: cardHeight,
@@ -210,11 +211,11 @@ class _CardViewState extends State<CardView> {
                         enableLatex: true,
                         enableCodeHighlight: true,
                       ),
-                      styleSheet: MarkdownStyleSheet(
+                      styleSheet: (isDark ? MarkdownStyleSheet.dark() : MarkdownStyleSheet.light()).copyWith(
                         paragraphStyle: TextStyle(color: textColor.withOpacity(0.85), fontSize: 16, height: 1.5, fontWeight: FontWeight.bold),
                         h1Style: TextStyle(color: textColor, fontWeight: FontWeight.w900),
                         h2Style: TextStyle(color: textColor, fontWeight: FontWeight.w900),
-                        inlineCodeStyle: const TextStyle(backgroundColor: Colors.black12, fontFamily: 'monospace'),
+                        inlineCodeStyle: TextStyle(backgroundColor: isDark ? Colors.white12 : Colors.black12, color: isDark ? Colors.white : Colors.black, fontFamily: 'monospace'),
                       ),
                       imageBuilder: (url, title, alt) {
                         String relativePath = Uri.decodeComponent(url);

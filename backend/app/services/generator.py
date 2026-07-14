@@ -17,7 +17,7 @@ class FlashcardGen(BaseModel):
         description="A short, concise question representing the front side of the flashcard."
     )
     answer: str = Field(
-        description="The back side of the flashcard, formatted in Markdown. Can include LaTeX formulas (use '$' for inline and '$$' for block math, e.g. $E=mc^2$). If referencing an image, use standard markdown: ![Diagram](assets/image_name.png) where image_name.png is from the page's Available Images list."
+        description="The back side of the flashcard, formatted in Markdown. Can include LaTeX formulas (use '$' for inline and '$$' for block math, e.g. $E=mc^2$). If referencing an image, use standard markdown: ![Diagram](assets/image_name.png) where image_name.png is from the page's Available Images list. If writing Mermaid diagrams, use standard, simple syntax with no HTML tags inside labels. Keep all URLs as raw, visible text without markdown link anchors."
     )
     tags: list[str] = Field(
         description="A list of relevant tags or topics for this flashcard. Max Limit of 2 tags."
@@ -162,8 +162,14 @@ Instructions:
 8. Format mathematical equations cleanly using LaTeX math notation:
    - Use standard `$` for inline math (e.g. $E=mc^2$)
    - Use `$$` for block display equations on their own lines.
-9. Format code snippets cleanly using fenced markdown blocks with language syntax highlighting (e.g. ```python\\n...\\n```). Format flowcharts, process logic, system architecture, or state machines using clean Mermaid diagrams (e.g. ```mermaid\\ngraph TD\\n...\\n```).
-10. Provide output strictly matching the requested JSON schema.
+9. Format code snippets cleanly using fenced markdown blocks with language syntax highlighting (e.g. ```python\\n...\\n```).
+10. Format flowcharts, process logic, system architecture, or state machines using clean Mermaid diagrams (e.g. ```mermaid\\ngraph TD\\n...\\n```). You MUST strictly adhere to basic, standard Mermaid syntax to ensure mobile and web parsers do not fail:
+    - Stick to `graph TD` or `graph LR` for flowcharts, `sequenceDiagram` for sequences, and `pie` for pie charts.
+    - Keep it extremely simple. Do NOT include CSS blocks, custom style definitions, or class assignments.
+    - Do NOT include any HTML tags (such as `<b>`, `<i>`, or `<br>`) inside node labels or shapes (e.g., do NOT write `A[<b>Start</b>]` or `A[Start<br>Line]`). Use only plain text inside node brackets, such as `A[Start]`, `B(Process)`, or `C{Decision}`.
+    - Keep edges simple: `A --> B` or `A -->|Label| B`.
+11. If there are web links or URLs in the text, do NOT wrap them in markdown link format (i.e. do NOT use `[anchor text](url)`). Keep them as raw, visible text links (e.g., `https://example.com/api`). Do not hide the URL behind custom markdown text.
+12. Provide output strictly matching the requested JSON schema.
 """
     else:
         prompt = f"""
@@ -188,8 +194,14 @@ Instructions:
 8. Format mathematical equations cleanly using LaTeX math notation:
    - Use standard `$` for inline math (e.g. $E=mc^2$)
    - Use `$$` for block display equations on their own lines.
-9. Format code snippets cleanly using fenced markdown blocks with language syntax highlighting (e.g. ```python\\n...\\n```). Format flowcharts, process logic, system architecture, or state machines using clean Mermaid diagrams (e.g. ```mermaid\\ngraph TD\\n...\\n```).
-10. Provide output strictly matching the requested JSON schema.
+9. Format code snippets cleanly using fenced markdown blocks with language syntax highlighting (e.g. ```python\\n...\\n```).
+10. Format flowcharts, process logic, system architecture, or state machines using clean Mermaid diagrams (e.g. ```mermaid\\ngraph TD\\n...\\n```). You MUST strictly adhere to basic, standard Mermaid syntax to ensure mobile and web parsers do not fail:
+    - Stick to `graph TD` or `graph LR` for flowcharts, `sequenceDiagram` for sequences, and `pie` for pie charts.
+    - Keep it extremely simple. Do NOT include CSS blocks, custom style definitions, or class assignments.
+    - Do NOT include any HTML tags (such as `<b>`, `<i>`, or `<br>`) inside node labels or shapes (e.g., do NOT write `A[<b>Start</b>]` or `A[Start<br>Line]`). Use only plain text inside node brackets, such as `A[Start]`, `B(Process)`, or `C{Decision}`.
+    - Keep edges simple: `A --> B` or `A -->|Label| B`.
+11. If there are web links or URLs in the text, do NOT wrap them in markdown link format (i.e. do NOT use `[anchor text](url)`). Keep them as raw, visible text links (e.g., `https://example.com/api`). Do not hide the URL behind custom markdown text.
+12. Provide output strictly matching the requested JSON schema.
 """
 
     try:
