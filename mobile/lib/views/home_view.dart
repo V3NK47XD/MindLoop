@@ -7,6 +7,9 @@ import 'package:mobile/services/sync_service.dart';
 import 'package:mobile/services/notification_service.dart';
 import 'package:mobile/views/card_view.dart';
 import 'package:mobile/views/scanner_view.dart';
+import 'package:mobile/views/notifications_view.dart';
+
+import 'package:mobile/widgets/paper_background.dart';
 
 class HomeView extends StatefulWidget {
   const HomeView({Key? key}) : super(key: key);
@@ -139,114 +142,17 @@ class _HomeViewState extends State<HomeView> {
     }
   }
 
-  void _showSettingsBottomSheet() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: const Color(0xFF111928),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setModalState) {
-            return Padding(
-              padding: const EdgeInsets.all(24.0),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Study Reminders Settings',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Configure how frequently MindLoop alerts you with random review questions.',
-                    style: TextStyle(color: Colors.grey, fontSize: 13),
-                  ),
-                  const SizedBox(height: 20),
-                  DropdownButtonFormField<int>(
-                    value: _frequencyHours,
-                    dropdownColor: const Color(0xFF111928),
-                    decoration: InputDecoration(
-                      labelText: 'Notification Frequency',
-                      labelStyle: const TextStyle(color: Colors.grey),
-                      enabledBorder: OutlineInputBorder(
-                        borderSide: BorderSide(color: Colors.white.withOpacity(0.08)),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderSide: BorderSide(color: Theme.of(context).primaryColor),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                    ),
-                    style: const TextStyle(color: Colors.white),
-                    items: const [
-                      DropdownMenuItem(value: 0, child: Text('Disabled (Muted)')),
-                      DropdownMenuItem(value: 1, child: Text('Every Hour')),
-                      DropdownMenuItem(value: 3, child: Text('Every 3 Hours')),
-                      DropdownMenuItem(value: 6, child: Text('Every 6 Hours')),
-                      DropdownMenuItem(value: 12, child: Text('Every 12 Hours')),
-                      DropdownMenuItem(value: 24, child: Text('Every 24 Hours')),
-                    ],
-                    onChanged: (val) {
-                      if (val != null) {
-                        setModalState(() {
-                          _frequencyHours = val;
-                        });
-                        _saveFrequency(val);
-                      }
-                    },
-                  ),
-                  const SizedBox(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      ElevatedButton.icon(
-                        icon: const Icon(Icons.notifications_active),
-                        label: const Text('Test Notification'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white.withOpacity(0.05),
-                          foregroundColor: Colors.white,
-                          side: BorderSide(color: Colors.white.withOpacity(0.1)),
-                        ),
-                        onPressed: () async {
-                          if (_cards.isEmpty) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Please sync some cards first to run test.')),
-                            );
-                            return;
-                          }
-                          Navigator.pop(context);
-                          final randomCard = _cards.first; // Get first card as test
-                          await _notificationService.showTestNotification(
-                            'MindLoop Review!',
-                            randomCard.question,
-                            randomCard.id,
-                          );
-                        },
-                      ),
-                      TextButton(
-                        onPressed: () => Navigator.pop(context),
-                        child: const Text('Done'),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final textColor = isDark ? Colors.white : Colors.black;
+    final panelBg = isDark ? const Color(0xFF111827) : Colors.white;
+    final borderColor = isDark ? Colors.white : Colors.black;
     final isPaired = _syncService.serverIp != null;
 
     return Scaffold(
+      extendBodyBehindAppBar: true,
       appBar: AppBar(
         title: Row(
           children: [
@@ -260,318 +166,336 @@ class _HomeViewState extends State<HomeView> {
               ),
             ),
             const SizedBox(width: 12),
-            const Text('MindLoop', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 22)),
+            Text('MINDLOOP', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 22, color: textColor)),
           ],
         ),
         backgroundColor: Colors.transparent,
         elevation: 0,
-        foregroundColor: Colors.white,
+        foregroundColor: textColor,
         actions: [
           IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: _showSettingsBottomSheet,
+            icon: Icon(Icons.notifications_active_outlined, color: textColor),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const NotificationsView()),
+              );
+            },
           ),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: _handleSync,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // 1. Connection Status Card
-              Builder(
-                builder: (context) {
-                  final serverIp = _syncService.serverIp;
-                  final isConnected = _syncService.isConnected;
-                  
-                  IconData statusIcon = Icons.signal_wifi_off_outlined;
-                  Color statusColor = Colors.grey;
-                  String statusTitle = 'Not Connected';
-                  String statusDesc = 'Pair with PC QR code to sync cards';
-                  
-                  if (serverIp != null) {
-                    if (isConnected) {
-                      statusIcon = Icons.wifi_protected_setup;
-                      statusColor = theme.primaryColor;
-                      statusTitle = 'Connected to PC';
-                      statusDesc = 'Server: $serverIp:${_syncService.serverPort}';
-                    } else {
-                      statusIcon = Icons.cloud_off_rounded;
-                      statusColor = Colors.orangeAccent;
-                      statusTitle = 'PC Offline';
-                      statusDesc = 'Server unreachable. Check Wi-Fi or restart PC.';
-                    }
-                  }
+      body: PaperBackground(
+        isDark: isDark,
+        child: SafeArea(
+          child: RefreshIndicator(
+            onRefresh: _handleSync,
+            color: borderColor,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // 1. Connection Status Card
+                  Builder(
+                    builder: (context) {
+                      final serverIp = _syncService.serverIp;
+                      final isConnected = _syncService.isConnected;
+                      
+                      IconData statusIcon = Icons.signal_wifi_off_outlined;
+                      Color statusColor = Colors.grey;
+                      String statusTitle = 'NOT CONNECTED';
+                      String statusDesc = 'Pair with PC QR code to sync cards';
+                      
+                      if (serverIp != null) {
+                        if (isConnected) {
+                          statusIcon = Icons.wifi_protected_setup;
+                          statusColor = Colors.cyan;
+                          statusTitle = 'CONNECTED TO PC';
+                          statusDesc = 'Server: $serverIp:${_syncService.serverPort}';
+                        } else {
+                          statusIcon = Icons.cloud_off_rounded;
+                          statusColor = Colors.amber; // Yellow
+                          statusTitle = 'PC OFFLINE';
+                          statusDesc = 'Server unreachable. Check Wi-Fi or restart PC.';
+                        }
+                      }
 
-                  return Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(18),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF111928),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: statusColor.withOpacity(0.15)),
-                      boxShadow: [
-                        BoxShadow(
-                          color: statusColor.withOpacity(0.02),
-                          blurRadius: 10,
-                          spreadRadius: 1,
+                      return Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(18),
+                        decoration: BoxDecoration(
+                          color: panelBg,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: borderColor, width: 2.5),
+                          boxShadow: [
+                            BoxShadow(
+                              color: borderColor,
+                              offset: const Offset(4, 4),
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          statusIcon,
-                          color: statusColor,
-                          size: 28,
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                statusTitle,
-                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white),
+                        child: Row(
+                          children: [
+                            Icon(
+                              statusIcon,
+                              color: statusColor,
+                              size: 28,
+                            ),
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    statusTitle,
+                                    style: TextStyle(fontWeight: FontWeight.w900, fontSize: 14, color: textColor),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    statusDesc,
+                                    style: TextStyle(color: isDark ? Colors.grey[400] : Colors.grey[700], fontSize: 11, fontWeight: FontWeight.bold),
+                                  ),
+                                ],
                               ),
-                              const SizedBox(height: 2),
-                              Text(
-                                statusDesc,
-                                style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            ),
+                            if (serverIp != null) ...[
+                              IconButton(
+                                icon: Icon(Icons.sync, color: isConnected ? textColor : Colors.grey),
+                                onPressed: isConnected ? _handleSync : null,
+                                tooltip: 'Synchronize',
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.link_off, color: Colors.red),
+                                onPressed: () async {
+                                  await _syncService.disconnect();
+                                  setState(() {});
+                                },
+                                tooltip: 'Disconnect',
+                              ),
+                            ] else ...[
+                              ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.cyan,
+                                  foregroundColor: Colors.black,
+                                  elevation: 0,
+                                  side: BorderSide(color: borderColor, width: 2.0),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                ),
+                                onPressed: () async {
+                                  final success = await Navigator.push(
+                                    context,
+                                    MaterialPageRoute(builder: (context) => const ScannerView()),
+                                  );
+                                  if (success == true) {
+                                    setState(() {});
+                                  }
+                                },
+                                child: const Text('PAIR', style: TextStyle(fontWeight: FontWeight.w900)),
                               ),
                             ],
-                          ),
-                        ),
-                        if (serverIp != null) ...[
-                          IconButton(
-                            icon: Icon(Icons.sync, color: isConnected ? Colors.white : Colors.grey),
-                            onPressed: isConnected ? _handleSync : null,
-                            tooltip: 'Synchronize',
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.link_off, color: Colors.redAccent),
-                            onPressed: () async {
-                              await _syncService.disconnect();
-                              setState(() {});
-                            },
-                            tooltip: 'Disconnect',
-                          ),
-                        ] else ...[
-                          ElevatedButton(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: theme.primaryColor,
-                              foregroundColor: Colors.white,
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                            ),
-                            onPressed: () async {
-                              final success = await Navigator.push(
-                                context,
-                                MaterialPageRoute(builder: (context) => const ScannerView()),
-                              );
-                              if (success == true) {
-                                setState(() {});
-                              }
-                            },
-                            child: const Text('Pair'),
-                          ),
-                        ],
-                      ],
-                    ),
-                  );
-                }
-              ),
-              const SizedBox(height: 20),
-
-              // 2. Search & Tag Filters
-              TextField(
-                onChanged: (val) {
-                  setState(() {
-                    _searchQuery = val;
-                  });
-                  _refreshLibrary();
-                },
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  hintText: 'Search flashcards...',
-                  hintStyle: const TextStyle(color: Colors.grey),
-                  prefixIcon: const Icon(Icons.search, color: Colors.grey),
-                  filled: true,
-                  fillColor: const Color(0xFF111928),
-                  contentPadding: const EdgeInsets.symmetric(vertical: 0),
-                  enabledBorder: OutlineInputBorder(
-                    borderSide: BorderSide(color: Colors.white.withOpacity(0.06)),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderSide: BorderSide(color: theme.primaryColor),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-
-              // 3. Tags Chips
-              if (_allTags.isNotEmpty) ...[
-                SizedBox(
-                  height: 35,
-                  child: ListView.builder(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: _allTags.length,
-                    itemBuilder: (context, idx) {
-                      final tag = _allTags[idx];
-                      final isSelected = _selectedTags.contains(tag);
-                      return Padding(
-                        padding: const EdgeInsets.only(right: 8.0),
-                        child: FilterChip(
-                          label: Text('#$tag'),
-                          selected: isSelected,
-                          selectedColor: theme.primaryColor.withOpacity(0.2),
-                          checkmarkColor: theme.primaryColor,
-                          backgroundColor: const Color(0xFF111928),
-                          labelStyle: TextStyle(
-                            color: isSelected ? theme.primaryColor : Colors.grey[400],
-                            fontSize: 12,
-                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                          ),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(20),
-                            side: BorderSide(
-                              color: isSelected ? theme.primaryColor : Colors.white.withOpacity(0.04),
-                            ),
-                          ),
-                          onSelected: (selected) {
-                            setState(() {
-                              if (selected) {
-                                _selectedTags.add(tag);
-                              } else {
-                                _selectedTags.remove(tag);
-                              }
-                            });
-                            _refreshLibrary();
-                          },
+                          ],
                         ),
                       );
-                    },
+                    }
                   ),
-                ),
-                const SizedBox(height: 16),
-              ],
+                  const SizedBox(height: 20),
 
-              // 4. Cards list
-              Expanded(
-                child: _isLoading
-                    ? const Center(child: CircularProgressIndicator())
-                    : _cards.isEmpty
-                        ? Center(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.layers_clear_outlined, size: 48, color: Colors.grey[700]),
-                                const SizedBox(height: 12),
-                                Text(
-                                  _searchQuery.isNotEmpty || _selectedTags.isNotEmpty
-                                      ? 'No matching flashcards'
-                                      : 'No flashcards synced yet',
-                                  style: TextStyle(color: Colors.grey[500]),
+                  // 2. Search Field
+                  Container(
+                    decoration: BoxDecoration(
+                      boxShadow: [
+                        BoxShadow(
+                          color: borderColor,
+                          offset: const Offset(3, 3),
+                        ),
+                      ],
+                    ),
+                    child: TextField(
+                      onChanged: (val) {
+                        setState(() {
+                          _searchQuery = val;
+                        });
+                        _refreshLibrary();
+                      },
+                      style: TextStyle(color: textColor, fontWeight: FontWeight.bold),
+                      decoration: InputDecoration(
+                        hintText: 'Search flashcards...',
+                        hintStyle: TextStyle(color: textColor.withOpacity(0.5)),
+                        prefixIcon: Icon(Icons.search, color: textColor),
+                        filled: true,
+                        fillColor: panelBg,
+                        contentPadding: const EdgeInsets.symmetric(vertical: 0),
+                        enabledBorder: OutlineInputBorder(
+                          borderSide: BorderSide(color: borderColor, width: 2.5),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderSide: const BorderSide(color: Colors.cyan, width: 2.5),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // 3. Tags Chips
+                  if (_allTags.isNotEmpty) ...[
+                    SizedBox(
+                      height: 35,
+                      child: ListView.builder(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: _allTags.length,
+                        itemBuilder: (context, idx) {
+                          final tag = _allTags[idx];
+                          final isSelected = _selectedTags.contains(tag);
+                          final tagCol = _getTagColor(tag);
+                          
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 8.0),
+                            child: FilterChip(
+                              label: Text('#$tag'),
+                              selected: isSelected,
+                              selectedColor: tagCol.withOpacity(0.2),
+                              checkmarkColor: tagCol,
+                              backgroundColor: panelBg,
+                              labelStyle: TextStyle(
+                                color: tagCol,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w900,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(6),
+                                side: BorderSide(
+                                  color: isSelected ? tagCol : borderColor,
+                                  width: 2.0,
                                 ),
-                              ],
+                              ),
+                              onSelected: (selected) {
+                                setState(() {
+                                  if (selected) {
+                                    _selectedTags.add(tag);
+                                  } else {
+                                    _selectedTags.remove(tag);
+                                  }
+                                });
+                                _refreshLibrary();
+                              },
                             ),
-                          )
-                        : ListView.builder(
-                            physics: const AlwaysScrollableScrollPhysics(),
-                            itemCount: _cards.length,
-                            itemBuilder: (context, idx) {
-                              final card = _cards[idx];
-                               return Container(
-                                 margin: const EdgeInsets.only(bottom: 12),
-                                 decoration: BoxDecoration(
-                                   borderRadius: BorderRadius.circular(16),
-                                   gradient: LinearGradient(
-                                     colors: [
-                                       const Color(0xFF111928),
-                                       const Color(0xFF111928).withOpacity(0.85),
-                                     ],
-                                   ),
-                                   border: Border.all(
-                                     color: card.tags.isNotEmpty 
-                                         ? _getTagColor(card.tags.first).withOpacity(0.12)
-                                         : Colors.white.withOpacity(0.04),
-                                   ),
-                                   boxShadow: [
-                                     BoxShadow(
-                                       color: Colors.black.withOpacity(0.2),
-                                       blurRadius: 8,
-                                       offset: const Offset(0, 4),
-                                     ),
-                                   ],
-                                 ),
-                                 child: ListTile(
-                                   contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                                   title: Text(
-                                     card.question,
-                                     style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.white),
-                                     maxLines: 2,
-                                     overflow: TextOverflow.ellipsis,
-                                   ),
-                                   subtitle: Padding(
-                                     padding: const EdgeInsets.only(top: 8.0),
-                                     child: Column(
-                                       crossAxisAlignment: CrossAxisAlignment.start,
-                                       children: [
-                                         Row(
-                                           children: [
-                                             Icon(Icons.description_outlined, size: 12, color: theme.colorScheme.secondary),
-                                             const SizedBox(width: 4),
-                                             Expanded(
-                                               child: Text(
-                                                 card.sourcePdf,
-                                                 style: TextStyle(color: Colors.grey[400], fontSize: 11, fontWeight: FontWeight.w500),
-                                                 overflow: TextOverflow.ellipsis,
-                                               ),
-                                             ),
-                                           ],
-                                         ),
-                                         if (card.tags.isNotEmpty) ...[
-                                           const SizedBox(height: 8),
-                                           Wrap(
-                                             spacing: 6,
-                                             runSpacing: 4,
-                                             children: card.tags.take(3).map((tag) {
-                                               final col = _getTagColor(tag);
-                                               return Container(
-                                                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                                 decoration: BoxDecoration(
-                                                   color: col.withOpacity(0.1),
-                                                   borderRadius: BorderRadius.circular(6),
-                                                   border: Border.all(color: col.withOpacity(0.2), width: 0.5),
-                                                 ),
-                                                 child: Text(
-                                                   '#$tag',
-                                                   style: TextStyle(color: col, fontSize: 10, fontWeight: FontWeight.w600),
-                                                 ),
-                                               );
-                                             }).toList(),
-                                           ),
-                                         ],
-                                       ],
-                                     ),
-                                   ),
-                                   trailing: const Icon(Icons.arrow_forward_ios, size: 14, color: Colors.grey),
-                                   onTap: () {
-                                     Navigator.push(
-                                       context,
-                                       MaterialPageRoute(builder: (context) => CardView(card: card)),
-                                     );
-                                   },
-                                   onLongPress: () => _handleDeleteCard(card.id),
-                                 ),
-                               );
-                            },
-                          ),
+                          );
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+
+                  // 4. Cards list
+                  Expanded(
+                    child: _isLoading
+                        ? Center(child: CircularProgressIndicator(color: borderColor))
+                        : _cards.isEmpty
+                            ? Center(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.layers_clear_outlined, size: 48, color: textColor.withOpacity(0.4)),
+                                    const SizedBox(height: 12),
+                                    Text(
+                                      _searchQuery.isNotEmpty || _selectedTags.isNotEmpty
+                                          ? 'No matching flashcards'
+                                          : 'No flashcards synced yet',
+                                      style: TextStyle(color: textColor.withOpacity(0.5), fontWeight: FontWeight.bold),
+                                    ),
+                                  ],
+                                ),
+                              )
+                            : ListView.builder(
+                                physics: const AlwaysScrollableScrollPhysics(),
+                                itemCount: _cards.length,
+                                itemBuilder: (context, idx) {
+                                  final card = _cards[idx];
+                                  return Container(
+                                    margin: const EdgeInsets.only(bottom: 14),
+                                    decoration: BoxDecoration(
+                                      color: panelBg,
+                                      borderRadius: BorderRadius.circular(12),
+                                      border: Border.all(
+                                        color: borderColor,
+                                        width: 2.5,
+                                      ),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: borderColor,
+                                          offset: const Offset(3, 3),
+                                        ),
+                                      ],
+                                    ),
+                                    child: ListTile(
+                                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                      title: Text(
+                                        card.question,
+                                        style: TextStyle(fontWeight: FontWeight.w900, color: textColor),
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      subtitle: Padding(
+                                        padding: const EdgeInsets.only(top: 8.0),
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Row(
+                                              children: [
+                                                Icon(Icons.description_outlined, size: 12, color: textColor.withOpacity(0.6)),
+                                                const SizedBox(width: 4),
+                                                Expanded(
+                                                  child: Text(
+                                                    card.sourcePdf,
+                                                    style: TextStyle(color: textColor.withOpacity(0.6), fontSize: 11, fontWeight: FontWeight.bold),
+                                                    overflow: TextOverflow.ellipsis,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            if (card.tags.isNotEmpty) ...[
+                                              const SizedBox(height: 8),
+                                              Wrap(
+                                                spacing: 6,
+                                                runSpacing: 4,
+                                                children: card.tags.take(3).map((tag) {
+                                                  final col = _getTagColor(tag);
+                                                  return Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                                                    decoration: BoxDecoration(
+                                                      color: col.withOpacity(0.15),
+                                                      borderRadius: BorderRadius.circular(4),
+                                                      border: Border.all(color: col, width: 2.0),
+                                                    ),
+                                                    child: Text(
+                                                      '#$tag',
+                                                      style: TextStyle(color: col, fontSize: 10, fontWeight: FontWeight.w900),
+                                                    ),
+                                                  );
+                                                }).toList(),
+                                              ),
+                                            ],
+                                          ],
+                                        ),
+                                      ),
+                                      trailing: Icon(Icons.arrow_forward_ios, size: 14, color: textColor),
+                                      onTap: () {
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(builder: (context) => CardView(card: card)),
+                                        );
+                                      },
+                                      onLongPress: () => _handleDeleteCard(card.id),
+                                    ),
+                                  );
+                                },
+                              ),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
         ),
       ),
@@ -581,13 +505,10 @@ class _HomeViewState extends State<HomeView> {
   Color _getTagColor(String tag) {
     final hash = tag.hashCode;
     final colors = [
-      Colors.pinkAccent,
-      Colors.blueAccent,
-      Colors.greenAccent,
-      Colors.amberAccent,
-      Colors.deepOrangeAccent,
-      Colors.purpleAccent,
-      Colors.cyanAccent,
+      Colors.cyan,
+      Colors.amber, // Yellow
+      Colors.green,
+      Colors.redAccent,
     ];
     return colors[hash.abs() % colors.length];
   }

@@ -101,7 +101,8 @@ def generate_flashcards_from_pdf(
     pdf_path: Path,
     pages_data: list[dict],
     temp_img_dir: Path,
-    storage_dir: Path
+    storage_dir: Path,
+    existing_tags: list[str] = None
 ) -> list[str]:
     """
     Uploads the PDF to Gemini, triggers multimodal generation, 
@@ -128,13 +129,16 @@ def generate_flashcards_from_pdf(
             for img in page["images"]:
                 image_mapping_text += f" - {img}\n"
                 
+    # Format existing tags list for LLM context
+    existing_tags_str = ", ".join(existing_tags) if existing_tags else "None"
+                
     if is_text_only:
         pdf_text = ""
         for page in pages_data:
             pdf_text += f"\n--- PDF Page {page['page_num']} ---\n{page['text']}\n"
             
         prompt = f"""
-You are an expert educator. Your goal is to analyze the text of a PDF document and create high-quality study flashcards from it.
+You are an expert educator. Your goal is to analyze the text of a PDF document and create high-quality study topic summary flashcards from it.
 
 Here is the extracted text content of the PDF:
 {pdf_text}
@@ -144,40 +148,46 @@ Here is a list of pre-extracted image filenames matching specific pages in the P
 
 Instructions:
 1. Review the PDF text content, including all conceptual details, definitions, and equations.
-2. Generate comprehensive flashcards targeting important definitions, concepts, mathematical formulas, and visual diagrams.
-3. Limit the tags array for each flashcard to EXACTLY 2 tags (no more, no less). The tags should be concise single-word identifiers related to the topic.
-4. Ensure the question is clear, direct, and concise. The answer must be highly descriptive, detailed, and clear, explaining all relevant details, using formatting (bullet points, bold text) and LaTeX equations where appropriate.
-5. If a concept is best explained by a diagram, graph, or formula in the PDF:
+2. Strictly use information present in the PDF only. Do NOT include outside facts or hallucinate beyond the source text.
+3. Do NOT frame standard Q&A questions. Instead, split the PDF into logical chunks of topics.
+   - For the `question` field of each flashcard, generate a headline or news/blog article style Headline representing that topic chunk (e.g. 'KaTeX Equation Engine Implementation' or 'Thermal Properties of High-Frequency Alloys').
+   - For the `answer` field, provide a detailed, educational, and clear summary of that topic chunk, utilizing bold text, bullet points, and KaTeX equations where appropriate.
+4. Limit the tags array for each flashcard to EXACTLY 1 tag. Do NOT specify more than 1 tag per flashcard.
+5. Here is a list of existing hashtags currently in the user's library: {existing_tags_str}. Try to reuse any of these existing tags if the topic matches them. However, only reuse a tag if it is appropriate. If the topic is quite different, create and use a new hashtag.
+6. If a concept is best explained by a diagram, graph, or formula in the PDF:
    - Identify which image filename (e.g. `page_3_img_1.png`) matches that graphic.
    - Reference it inside the flashcard's `answer` markdown using standard relative path markdown format: `![Description](assets/page_3_img_1.png)`.
    - Add that exact filename string to the `attachments` array.
-6. If a card does not require a visual asset, keep `attachments` empty.
-7. Format mathematical equations cleanly using LaTeX math notation:
+7. If a card does not require a visual asset, keep `attachments` empty.
+8. Format mathematical equations cleanly using LaTeX math notation:
    - Use standard `$` for inline math (e.g. $E=mc^2$)
    - Use `$$` for block display equations on their own lines.
-8. Provide output strictly matching the requested JSON schema.
+9. Provide output strictly matching the requested JSON schema.
 """
     else:
         prompt = f"""
-You are an expert educator. Your goal is to analyze the attached PDF and create high-quality study flashcards from it.
+You are an expert educator. Your goal is to analyze the attached PDF and create high-quality study topic summary flashcards from it.
 
 Here is a list of pre-extracted image filenames matching specific pages in the PDF:
 {image_mapping_text}
 
 Instructions:
 1. Visually review the PDF pages, including all text, formulas, diagrams, charts, and drawings.
-2. Generate comprehensive flashcards targeting important definitions, concepts, mathematical formulas, and visual diagrams.
-3. Limit the tags array for each flashcard to EXACTLY 2 tags (no more, no less). The tags should be concise single-word identifiers related to the topic.
-4. Ensure the question is clear, direct, and concise. The answer must be highly descriptive, detailed, and clear, explaining all relevant details, using formatting (bullet points, bold text) and LaTeX equations where appropriate.
-5. If a concept is best explained by a diagram, graph, or formula in the PDF:
+2. Strictly use information present in the PDF only. Do NOT include outside facts or hallucinate beyond the source text.
+3. Do NOT frame standard Q&A questions. Instead, split the PDF into logical chunks of topics.
+   - For the `question` field of each flashcard, generate a headline or news/blog article style Headline representing that topic chunk (e.g. 'KaTeX Equation Engine Implementation' or 'Thermal Properties of High-Frequency Alloys').
+   - For the `answer` field, provide a detailed, educational, and clear summary of that topic chunk, utilizing bold text, bullet points, and KaTeX equations where appropriate.
+4. Limit the tags array for each flashcard to EXACTLY 1 tag. Do NOT specify more than 1 tag per flashcard.
+5. Here is a list of existing hashtags currently in the user's library: {existing_tags_str}. Try to reuse any of these existing tags if the topic matches them. However, only reuse a tag if it is appropriate. If the topic is quite different, create and use a new hashtag.
+6. If a concept is best explained by a diagram, graph, or formula in the PDF:
    - Identify which image filename (e.g. `page_3_img_1.png`) matches that graphic.
    - Reference it inside the flashcard's `answer` markdown using standard relative path markdown format: `![Description](assets/page_3_img_1.png)`.
    - Add that exact filename string to the `attachments` array.
-6. If a card does not require a visual asset, keep `attachments` empty.
-7. Format mathematical equations cleanly using LaTeX math notation:
+7. If a card does not require a visual asset, keep `attachments` empty.
+8. Format mathematical equations cleanly using LaTeX math notation:
    - Use standard `$` for inline math (e.g. $E=mc^2$)
    - Use `$$` for block display equations on their own lines.
-8. Provide output strictly matching the requested JSON schema.
+9. Provide output strictly matching the requested JSON schema.
 """
 
     try:

@@ -5,6 +5,7 @@ import 'package:flutter_math_fork/flutter_math.dart';
 import 'package:path/path.dart' as p;
 import 'package:mobile/models/flashcard.dart';
 import 'package:mobile/services/storage_service.dart';
+import 'package:mobile/widgets/paper_background.dart';
 
 class CardView extends StatefulWidget {
   final Flashcard card;
@@ -46,7 +47,7 @@ class _CardViewState extends State<CardView> {
     }
   }
 
-  List<Widget> _parseMarkdownWithMath(String text, String folderPath) {
+  List<Widget> _parseMarkdownWithMath(String text, String folderPath, Color textColor) {
     final List<Widget> widgets = [];
     final List<String> parts = text.split('\$\$');
 
@@ -64,7 +65,7 @@ class _CardViewState extends State<CardView> {
                 scrollDirection: Axis.horizontal,
                 child: Math.tex(
                   part,
-                  textStyle: const TextStyle(fontSize: 18, color: Colors.white),
+                  textStyle: TextStyle(fontSize: 18, color: textColor, fontWeight: FontWeight.bold),
                   onErrorFallback: (err) => Text(part, style: const TextStyle(color: Colors.red)),
                 ),
               ),
@@ -73,13 +74,13 @@ class _CardViewState extends State<CardView> {
         );
       } else {
         // Standard markdown chunk (may contain inline math $)
-        widgets.add(_renderMarkdownBlock(part, folderPath));
+        widgets.add(_renderMarkdownBlock(part, folderPath, textColor));
       }
     }
     return widgets;
   }
 
-  Widget _renderMarkdownBlock(String text, String folderPath) {
+  Widget _renderMarkdownBlock(String text, String folderPath, Color textColor) {
     // If it contains inline math '$'
     if (text.contains('\$')) {
       final List<InlineSpan> spans = [];
@@ -94,14 +95,14 @@ class _CardViewState extends State<CardView> {
               alignment: PlaceholderAlignment.middle,
               child: Math.tex(
                 part,
-                textStyle: const TextStyle(fontSize: 15, color: Colors.white),
+                textStyle: TextStyle(fontSize: 15, color: textColor, fontWeight: FontWeight.bold),
                 onErrorFallback: (err) => Text(part, style: const TextStyle(color: Colors.red)),
               ),
             ),
           );
         } else {
           // Regular Text
-          spans.add(TextSpan(text: part, style: TextStyle(color: Colors.grey[300])));
+          spans.add(TextSpan(text: part, style: TextStyle(color: textColor.withOpacity(0.85), fontWeight: FontWeight.bold)));
         }
       }
       return Padding(
@@ -118,10 +119,10 @@ class _CardViewState extends State<CardView> {
       data: text,
       shrinkWrap: true,
       styleSheet: MarkdownStyleSheet(
-        p: TextStyle(color: Colors.grey[350], fontSize: 16, height: 1.5),
-        h1: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-        h2: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-        code: const TextStyle(backgroundColor: Colors.black38, fontFamily: 'monospace'),
+        p: TextStyle(color: textColor.withOpacity(0.85), fontSize: 16, height: 1.5, fontWeight: FontWeight.bold),
+        h1: TextStyle(color: textColor, fontWeight: FontWeight.w900),
+        h2: TextStyle(color: textColor, fontWeight: FontWeight.w900),
+        code: const TextStyle(backgroundColor: Colors.black12, fontFamily: 'monospace'),
       ),
       imageBuilder: (uri, title, alt) {
         // Decode and sanitize relative path
@@ -151,117 +152,123 @@ class _CardViewState extends State<CardView> {
             child: Padding(
               padding: const EdgeInsets.symmetric(vertical: 12),
               child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(8),
                 child: Container(
                   color: Colors.white, // Solid white background for transparent PDF assets
                   padding: const EdgeInsets.all(8.0),
                   child: Hero(
-                    tag: absolutePath,
-                    child: Image.file(
-                      file,
-                      fit: BoxFit.contain,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          );
-        }
-        return Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          child: Row(
-            children: [
-              const Icon(Icons.broken_image, color: Colors.grey),
-              const SizedBox(width: 8),
-              Text('Asset missing: $relativePath', style: const TextStyle(color: Colors.grey)),
-            ],
-          ),
-        );
-      },
-    );
-  }
+                     tag: absolutePath,
+                     child: Image.file(
+                       file,
+                       fit: BoxFit.contain,
+                     ),
+                   ),
+                 ),
+               ),
+             ),
+           );
+         }
+         return Padding(
+           padding: const EdgeInsets.symmetric(vertical: 8),
+           child: Row(
+             children: [
+               const Icon(Icons.broken_image, color: Colors.grey),
+               const SizedBox(width: 8),
+               Text('Asset missing: $relativePath', style: const TextStyle(color: Colors.grey)),
+             ],
+           ),
+         );
+       },
+     );
+   }
 
   @override
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
     final cardWidth = screenSize.width * 0.92;
-    final cardHeight = screenSize.height * 0.85;
+    final cardHeight = screenSize.height * 0.82;
+
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final textColor = isDark ? Colors.white : Colors.black;
+    final panelBg = isDark ? const Color(0xFF111827) : Colors.white;
+    final borderColor = isDark ? Colors.white : Colors.black;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0B0F19), // Matches PC dark theme
-      body: SafeArea(
-        child: Stack(
-          children: [
-            // Center card container
-            Center(
-              child: GestureDetector(
-                onTap: () => setState(() => _revealed = !_revealed),
-                child: Container(
-                  width: cardWidth,
-                  height: cardHeight,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF111928),
-                    borderRadius: BorderRadius.circular(24),
-                    border: Border.all(color: Colors.white.withOpacity(0.08)),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.4),
-                        blurRadius: 25,
-                        offset: const Offset(0, 12),
+      body: PaperBackground(
+        isDark: isDark,
+        child: SafeArea(
+          child: Stack(
+            children: [
+              // Center card container
+              Center(
+                child: GestureDetector(
+                  onTap: () => setState(() => _revealed = !_revealed),
+                  child: Container(
+                    width: cardWidth,
+                    height: cardHeight,
+                    decoration: BoxDecoration(
+                      color: panelBg,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: borderColor, width: 3.0),
+                      boxShadow: [
+                        BoxShadow(
+                          color: borderColor,
+                          offset: const Offset(6, 6),
+                        ),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: AnimatedCrossFade(
+                        firstChild: _buildFrontFace(cardHeight, cardWidth, textColor, borderColor, panelBg),
+                        secondChild: _buildBackFace(cardHeight, cardWidth, textColor, borderColor, panelBg),
+                        crossFadeState: !_revealed
+                            ? CrossFadeState.showFirst
+                            : CrossFadeState.showSecond,
+                        duration: const Duration(milliseconds: 250),
+                        firstCurve: Curves.easeInOut,
+                        secondCurve: Curves.easeInOut,
+                        sizeCurve: Curves.easeInOut,
                       ),
-                    ],
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(24),
-                    child: AnimatedCrossFade(
-                      firstChild: _buildFrontFace(cardHeight, cardWidth),
-                      secondChild: _buildBackFace(cardHeight, cardWidth),
-                      crossFadeState: !_revealed
-                          ? CrossFadeState.showFirst
-                          : CrossFadeState.showSecond,
-                      duration: const Duration(milliseconds: 300),
-                      firstCurve: Curves.easeInOut,
-                      secondCurve: Curves.easeInOut,
-                      sizeCurve: Curves.easeInOut,
                     ),
                   ),
                 ),
               ),
-            ),
-            // Floating back button on the top left
-            Positioned(
-              top: 16,
-              left: 16,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.black45,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white.withOpacity(0.1)),
-                ),
-                child: IconButton(
-                  icon: const Icon(Icons.arrow_back, color: Colors.white),
-                  onPressed: () => Navigator.pop(context),
+              // Floating back button on the top left
+              Positioned(
+                top: 16,
+                left: 16,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: panelBg,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: borderColor, width: 2.0),
+                  ),
+                  child: IconButton(
+                    icon: Icon(Icons.arrow_back, color: textColor),
+                    onPressed: () => Navigator.pop(context),
+                  ),
                 ),
               ),
-            ),
-            // Helper text at the bottom
-            Positioned(
-              bottom: 12,
-              left: 0,
-              right: 0,
-              child: Text(
-                _revealed ? 'Tap card to hide answer' : 'Tap card to reveal answer',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.grey[500], fontSize: 13),
+              // Helper text at the bottom
+              Positioned(
+                bottom: 12,
+                left: 0,
+                right: 0,
+                child: Text(
+                  _revealed ? 'TAP CARD TO HIDE ANSWER' : 'TAP CARD TO REVEAL ANSWER',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: textColor.withOpacity(0.6), fontSize: 12, fontWeight: FontWeight.w900),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildFrontFace(double cardHeight, double cardWidth) {
+  Widget _buildFrontFace(double cardHeight, double cardWidth, Color textColor, Color borderColor, Color panelBg) {
     return Container(
       key: const ValueKey('front'),
       height: cardHeight,
@@ -271,15 +278,15 @@ class _CardViewState extends State<CardView> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.help_outline, color: Theme.of(context).primaryColor, size: 48),
+          Icon(Icons.help_outline, color: textColor, size: 52),
           const SizedBox(height: 24),
           Text(
             widget.card.question,
             textAlign: TextAlign.center,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 22,
-              fontWeight: FontWeight.bold,
-              color: Colors.white,
+              fontWeight: FontWeight.w900,
+              color: textColor,
               height: 1.4,
             ),
           ),
@@ -289,13 +296,16 @@ class _CardViewState extends State<CardView> {
             runSpacing: 8,
             alignment: WrapAlignment.center,
             children: widget.card.tags.map((tag) => Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.05),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white.withOpacity(0.04)),
+                color: panelBg,
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: borderColor, width: 2.0),
               ),
-              child: Text('#$tag', style: TextStyle(color: Colors.grey[400], fontSize: 12)),
+              child: Text(
+                '#$tag',
+                style: TextStyle(color: textColor, fontSize: 11, fontWeight: FontWeight.w900),
+              ),
             )).toList(),
           ),
         ],
@@ -303,14 +313,14 @@ class _CardViewState extends State<CardView> {
     );
   }
 
-  Widget _buildBackFace(double cardHeight, double cardWidth) {
+  Widget _buildBackFace(double cardHeight, double cardWidth, Color textColor, Color borderColor, Color panelBg) {
     return Container(
       key: const ValueKey('back'),
       height: cardHeight,
       width: cardWidth,
-      padding: const EdgeInsets.all(28.0),
+      padding: const EdgeInsets.all(24.0),
       child: _isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? Center(child: CircularProgressIndicator(color: borderColor))
           : Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -321,18 +331,18 @@ class _CardViewState extends State<CardView> {
                     Expanded(
                       child: Text(
                         'Ref: ${widget.card.sourcePdf} (Page ${widget.card.pdfRefLine})',
-                        style: TextStyle(color: Colors.grey[500], fontSize: 12, fontStyle: FontStyle.italic),
+                        style: TextStyle(color: textColor.withOpacity(0.6), fontSize: 11, fontWeight: FontWeight.bold),
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ],
                 ),
-                const Divider(color: Colors.white12, height: 24),
+                Divider(color: borderColor, thickness: 2.0, height: 24),
                 Expanded(
                   child: SingleChildScrollView(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
-                      children: _parseMarkdownWithMath(_markdownContent, widget.card.folderPath),
+                      children: _parseMarkdownWithMath(_markdownContent, widget.card.folderPath, textColor),
                     ),
                   ),
                 ),
