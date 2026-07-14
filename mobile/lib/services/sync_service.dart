@@ -175,6 +175,7 @@ class SyncService extends ChangeNotifier {
 
       return response.statusCode == 200;
     } catch (e) {
+      print("Handshake exception for http://$ip:$port : $e");
       return false;
     }
   }
