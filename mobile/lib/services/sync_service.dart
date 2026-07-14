@@ -127,13 +127,22 @@ class SyncService extends ChangeNotifier {
   // 1. Discovery & Pairing Flow
   Future<bool> pairWithQR(String qrRawPayload) async {
     try {
+      print("Received QR Raw Payload: '$qrRawPayload'");
       final Map<String, dynamic> data = jsonDecode(qrRawPayload);
-      final String pairingCode = data['pairing_code'];
-      final int port = data['port'];
-      final List<dynamic> ips = data['ips'];
+      final String pairingCode = (data['pairing_code'] ?? '').toString().trim();
+      final int port = int.tryParse((data['port'] ?? '').toString()) ?? 6769;
+      final List<dynamic> ips = data['ips'] ?? [];
+      
+      final List<String> ipList = ips.map((e) => e.toString().trim()).toList();
+      print("Parsed pairing code: '$pairingCode', port: $port, IPs: $ipList");
+
+      if (ipList.isEmpty || pairingCode.isEmpty) {
+        print("Invalid QR data: ipList or pairingCode is empty");
+        return false;
+      }
 
       // Rely exclusively on concurrent TCP sweep over the IPs in the QR code
-      final String? foundIp = await _sweepIpsForPairing(ips.cast<String>(), port, pairingCode);
+      final String? foundIp = await _sweepIpsForPairing(ipList, port, pairingCode);
       final bool paired = (foundIp != null);
 
       if (paired && foundIp != null) {
@@ -142,8 +151,9 @@ class SyncService extends ChangeNotifier {
         triggerSyncCycle();
         return true;
       }
-    } catch (e) {
-      print("Pairing error: $e");
+    } catch (e, stack) {
+      print("Pairing error during parsing: $e");
+      print(stack);
     }
     return false;
   }
