@@ -22,13 +22,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Initialize UDP broadcast discovery listener
-    logger.info("Starting UDP Broadcast Discovery Listener...")
-    pairing.start_udp_broadcast_listener()
     yield
-    # Shutdown: Clean up UDP listener
-    logger.info("Stopping UDP Broadcast Discovery Listener...")
-    pairing.stop_udp_broadcast_listener()
 
 app = FastAPI(
     title="MindLoop PC API Server",

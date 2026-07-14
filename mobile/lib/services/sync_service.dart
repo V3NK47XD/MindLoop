@@ -132,19 +132,9 @@ class SyncService extends ChangeNotifier {
       final int port = data['port'];
       final List<dynamic> ips = data['ips'];
 
-      // Step A: Attempt UDP Broadcast discovery
-      String? foundIp = await _discoverServerViaUdp(pairingCode, port);
-      bool paired = false;
-      
-      if (foundIp != null) {
-        paired = await _runPairingHandshake(foundIp, port, pairingCode);
-      }
-      
-      // Step B: If UDP fails or handshake fails, fall back to sweeping TCP IP list
-      if (!paired) {
-        foundIp = await _sweepIpsForPairing(ips.cast<String>(), port, pairingCode);
-        paired = (foundIp != null);
-      }
+      // Rely exclusively on concurrent TCP sweep over the IPs in the QR code
+      final String? foundIp = await _sweepIpsForPairing(ips.cast<String>(), port, pairingCode);
+      final bool paired = (foundIp != null);
 
       if (paired && foundIp != null) {
         await _saveConnection(foundIp, port);
@@ -156,58 +146,6 @@ class SyncService extends ChangeNotifier {
       print("Pairing error: $e");
     }
     return false;
-  }
-
-  // Send UDP Broadcast to discover the PC
-  Future<String?> _discoverServerViaUdp(String pairingCode, int port) async {
-    try {
-      final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
-      socket.broadcastEnabled = true;
-      
-      final Map<String, dynamic> discoverMsg = {
-        "action": "discover",
-        "pairing_code": pairingCode
-      };
-      final List<int> payload = utf8.encode(jsonEncode(discoverMsg));
-      
-      // Broadcast to 255.255.255.255 on specified port
-      socket.send(payload, InternetAddress("255.255.255.255"), port);
-      print("Sent UDP discovery broadcast to port $port");
-
-      final Completer<String?> completer = Completer();
-      
-      // Setup a timeout for listening
-      Timer(const Duration(seconds: 2), () {
-        if (!completer.isCompleted) {
-          socket.close();
-          completer.complete(null);
-        }
-      });
-
-      socket.listen((RawSocketEvent event) {
-        if (event == RawSocketEvent.read) {
-          final datagram = socket.receive();
-          if (datagram != null) {
-            try {
-              final resp = jsonDecode(utf8.decode(datagram.data));
-              if (resp['action'] == 'discover_reply' && resp['status'] == 'ok') {
-                final pcIp = datagram.address.address;
-                print("UDP Discovery Reply received from PC: $pcIp");
-                socket.close();
-                completer.complete(pcIp);
-              }
-            } catch (e) {
-              // Ignore parse errors from foreign packets
-            }
-          }
-        }
-      });
-
-      return await completer.future;
-    } catch (e) {
-      print("UDP Broadcast exception: $e");
-      return null;
-    }
   }
 
   // Run the HTTP pairing handshake to register with the PC
