@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
-import 'package:flutter_math_fork/flutter_math.dart';
+import 'package:flutter_smooth_markdown/flutter_smooth_markdown.dart';
 import 'package:path/path.dart' as p;
 import 'package:mobile/models/flashcard.dart';
 import 'package:mobile/services/storage_service.dart';
@@ -46,141 +45,6 @@ class _CardViewState extends State<CardView> {
       }
     }
   }
-
-  List<Widget> _parseMarkdownWithMath(String text, String folderPath, Color textColor) {
-    final List<Widget> widgets = [];
-    final List<String> parts = text.split('\$\$');
-
-    for (int i = 0; i < parts.length; i++) {
-      final part = parts[i].trim();
-      if (part.isEmpty) continue;
-
-      if (i % 2 == 1) {
-        // Block display math $$
-        widgets.add(
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 16),
-            child: Center(
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Math.tex(
-                  part,
-                  textStyle: TextStyle(fontSize: 18, color: textColor, fontWeight: FontWeight.bold),
-                  onErrorFallback: (err) => Text(part, style: const TextStyle(color: Colors.red)),
-                ),
-              ),
-            ),
-          ),
-        );
-      } else {
-        // Standard markdown chunk (may contain inline math $)
-        widgets.add(_renderMarkdownBlock(part, folderPath, textColor));
-      }
-    }
-    return widgets;
-  }
-
-  Widget _renderMarkdownBlock(String text, String folderPath, Color textColor) {
-    // If it contains inline math '$'
-    if (text.contains('\$')) {
-      final List<InlineSpan> spans = [];
-      final List<String> parts = text.split('\$');
-      
-      for (int i = 0; i < parts.length; i++) {
-        final part = parts[i];
-        if (i % 2 == 1) {
-          // Inline Math
-          spans.add(
-            WidgetSpan(
-              alignment: PlaceholderAlignment.middle,
-              child: Math.tex(
-                part,
-                textStyle: TextStyle(fontSize: 15, color: textColor, fontWeight: FontWeight.bold),
-                onErrorFallback: (err) => Text(part, style: const TextStyle(color: Colors.red)),
-              ),
-            ),
-          );
-        } else {
-          // Regular Text
-          spans.add(TextSpan(text: part, style: TextStyle(color: textColor.withOpacity(0.85), fontWeight: FontWeight.bold)));
-        }
-      }
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8.0),
-        child: Text.rich(
-          TextSpan(children: spans),
-          style: const TextStyle(fontSize: 16, height: 1.5),
-        ),
-      );
-    }
-
-    // Standard Markdown render with local image asset resolution
-    return MarkdownBody(
-      data: text,
-      shrinkWrap: true,
-      styleSheet: MarkdownStyleSheet(
-        p: TextStyle(color: textColor.withOpacity(0.85), fontSize: 16, height: 1.5, fontWeight: FontWeight.bold),
-        h1: TextStyle(color: textColor, fontWeight: FontWeight.w900),
-        h2: TextStyle(color: textColor, fontWeight: FontWeight.w900),
-        code: const TextStyle(backgroundColor: Colors.black12, fontFamily: 'monospace'),
-      ),
-      imageBuilder: (uri, title, alt) {
-        // Decode and sanitize relative path
-        String relativePath = Uri.decodeComponent(uri.path);
-        
-        // Strip leading slash or relative dots so path.join treats it as relative
-        while (relativePath.startsWith('/')) {
-          relativePath = relativePath.substring(1);
-        }
-        if (relativePath.startsWith('./')) {
-          relativePath = relativePath.substring(2);
-        }
-
-        final absolutePath = p.join(folderPath, relativePath);
-        final file = File(absolutePath);
-
-        if (file.existsSync()) {
-          return GestureDetector(
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => ImageZoomViewer(file: file),
-                ),
-              );
-            },
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: Container(
-                  color: Colors.white, // Solid white background for transparent PDF assets
-                  padding: const EdgeInsets.all(8.0),
-                  child: Hero(
-                     tag: absolutePath,
-                     child: Image.file(
-                       file,
-                       fit: BoxFit.contain,
-                     ),
-                   ),
-                 ),
-               ),
-             ),
-           );
-         }
-         return Padding(
-           padding: const EdgeInsets.symmetric(vertical: 8),
-           child: Row(
-             children: [
-               const Icon(Icons.broken_image, color: Colors.grey),
-               const SizedBox(width: 8),
-               Text('Asset missing: $relativePath', style: const TextStyle(color: Colors.grey)),
-             ],
-           ),
-         );
-       },
-     );
-   }
 
   @override
   Widget build(BuildContext context) {
@@ -340,9 +204,66 @@ class _CardViewState extends State<CardView> {
                 Divider(color: borderColor, thickness: 2.0, height: 24),
                 Expanded(
                   child: SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: _parseMarkdownWithMath(_markdownContent, widget.card.folderPath, textColor),
+                    child: SmoothMarkdown(
+                      data: _markdownContent,
+                      styleSheet: MarkdownStyleSheet(
+                        paragraphStyle: TextStyle(color: textColor.withOpacity(0.85), fontSize: 16, height: 1.5, fontWeight: FontWeight.bold),
+                        h1Style: TextStyle(color: textColor, fontWeight: FontWeight.w900),
+                        h2Style: TextStyle(color: textColor, fontWeight: FontWeight.w900),
+                        inlineCodeStyle: const TextStyle(backgroundColor: Colors.black12, fontFamily: 'monospace'),
+                      ),
+                      imageBuilder: (url, title, alt) {
+                        String relativePath = Uri.decodeComponent(url);
+                        while (relativePath.startsWith('/')) {
+                          relativePath = relativePath.substring(1);
+                        }
+                        if (relativePath.startsWith('./')) {
+                          relativePath = relativePath.substring(2);
+                        }
+
+                        final absolutePath = p.join(widget.card.folderPath, relativePath);
+                        final file = File(absolutePath);
+
+                        if (file.existsSync()) {
+                          return GestureDetector(
+                            onTap: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => ImageZoomViewer(file: file),
+                                ),
+                              );
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: Container(
+                                  color: Colors.white,
+                                  padding: const EdgeInsets.all(8.0),
+                                  child: Hero(
+                                     tag: absolutePath,
+                                     child: Image.file(
+                                       file,
+                                       fit: BoxFit.contain,
+                                     ),
+                                   ),
+                                 ),
+                               ),
+                             ),
+                           );
+                         }
+                         return Padding(
+                           padding: const EdgeInsets.symmetric(vertical: 8),
+                           child: Row(
+                             children: [
+                               const Icon(Icons.broken_image, color: Colors.grey),
+                               const SizedBox(width: 8),
+                               Text('Asset missing: $relativePath', style: const TextStyle(color: Colors.grey)),
+                             ],
+                           ),
+                         );
+                      },
                     ),
                   ),
                 ),

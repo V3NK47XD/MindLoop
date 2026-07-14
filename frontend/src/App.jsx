@@ -17,6 +17,20 @@ import {
   Check,
   AlertTriangle
 } from 'lucide-react';
+import mermaid from 'mermaid';
+import Prism from 'prismjs';
+import 'prismjs/themes/prism-tomorrow.css';
+import 'prismjs/components/prism-javascript';
+import 'prismjs/components/prism-typescript';
+import 'prismjs/components/prism-python';
+import 'prismjs/components/prism-dart';
+
+// Initialize mermaid
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'dark',
+  securityLevel: 'loose',
+});
 
 const API_BASE = 'http://localhost:6769';
 
@@ -40,23 +54,83 @@ function MathBlock({ tex }) {
   return <div ref={containerRef} style={{ margin: '12px 0', overflowX: 'auto', textAlign: 'center' }} />;
 }
 
-function InlineMath({ tex }) {
-  const elRef = useRef(null);
+function MermaidBlock({ code }) {
+  const ref = useRef(null);
+  const [svg, setSvg] = useState('');
+  const [error, setError] = useState(null);
 
   useEffect(() => {
-    if (elRef.current && window.katex) {
+    if (!code) return;
+    setError(null);
+    const id = 'mermaid-' + Math.random().toString(36).substring(2, 9);
+    
+    const renderDiagram = async () => {
       try {
-        window.katex.render(tex, elRef.current, {
-          displayMode: false,
-          throwOnError: false
-        });
+        const { svg: renderedSvg } = await mermaid.render(id, code);
+        setSvg(renderedSvg);
       } catch (err) {
-        console.error("KaTeX error:", err);
+        console.error("Mermaid error:", err);
+        setError("Failed to render Mermaid diagram");
+        const badElement = document.getElementById(id);
+        if (badElement) {
+          badElement.remove();
+        }
       }
-    }
-  }, [tex]);
+    };
+    
+    renderDiagram();
+  }, [code]);
 
-  return <span ref={elRef} style={{ padding: '0 2px' }} />;
+  if (error) {
+    return (
+      <pre style={{ color: 'var(--red)', padding: '12px', border: '2px dashed var(--red)', overflowX: 'auto' }}>
+        {code}
+      </pre>
+    );
+  }
+
+  return (
+    <div 
+      ref={ref} 
+      className="mermaid-wrapper" 
+      style={{ 
+        margin: '16px 0', 
+        padding: '16px', 
+        backgroundColor: '#1e293b', 
+        borderRadius: '8px', 
+        border: '2px solid var(--panel-border)',
+        overflowX: 'auto',
+        display: 'flex',
+        justifyContent: 'center'
+      }} 
+      dangerouslySetInnerHTML={{ __html: svg || '<span style="color: var(--text-muted)">Rendering diagram...</span>' }} 
+    />
+  );
+}
+
+function CodeBlock({ code, language }) {
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (ref.current) {
+      Prism.highlightElement(ref.current);
+    }
+  }, [code, language]);
+
+  return (
+    <pre style={{ 
+      margin: '14px 0', 
+      borderRadius: '8px', 
+      border: '2px solid var(--panel-border)', 
+      overflowX: 'auto', 
+      backgroundColor: '#111827',
+      padding: '12px'
+    }}>
+      <code ref={ref} className={`language-${language || 'text'}`} style={{ fontFamily: 'monospace', fontSize: '0.9rem' }}>
+        {code}
+      </code>
+    </pre>
+  );
 }
 
 function parseBold(txt) {
@@ -137,6 +211,25 @@ function InlineMarkdown({ text, cardId }) {
   );
 }
 
+function InlineMath({ tex }) {
+  const elRef = useRef(null);
+
+  useEffect(() => {
+    if (elRef.current && window.katex) {
+      try {
+        window.katex.render(tex, elRef.current, {
+          displayMode: false,
+          throwOnError: false
+        });
+      } catch (err) {
+        console.error("KaTeX error:", err);
+      }
+    }
+  }, [tex]);
+
+  return <span ref={elRef} style={{ padding: '0 2px' }} />;
+}
+
 function TextBlock({ text, cardId }) {
   const lines = text.split('\n');
   return (
@@ -175,16 +268,82 @@ function TextBlock({ text, cardId }) {
   );
 }
 
+function parseMarkdownToBlocks(content) {
+  const blocks = [];
+  let currentIndex = 0;
+  
+  while (currentIndex < content.length) {
+    if (content.startsWith('$$', currentIndex)) {
+      const nextDollarIndex = content.indexOf('$$', currentIndex + 2);
+      if (nextDollarIndex !== -1) {
+        const mathContent = content.substring(currentIndex + 2, nextDollarIndex);
+        blocks.push({ type: 'math', value: mathContent.trim() });
+        currentIndex = nextDollarIndex + 2;
+        continue;
+      }
+    }
+    
+    if (content.startsWith('```', currentIndex)) {
+      const nextTripleQuoteIndex = content.indexOf('```', currentIndex + 3);
+      if (nextTripleQuoteIndex !== -1) {
+        const fullBlock = content.substring(currentIndex + 3, nextTripleQuoteIndex);
+        const firstNewLine = fullBlock.indexOf('\n');
+        let language = 'text';
+        let code = fullBlock;
+        if (firstNewLine !== -1) {
+          language = fullBlock.substring(0, firstNewLine).trim().toLowerCase();
+          code = fullBlock.substring(firstNewLine + 1);
+        }
+        
+        if (language === 'mermaid') {
+          blocks.push({ type: 'mermaid', value: code.trim() });
+        } else {
+          blocks.push({ type: 'code', language, value: code });
+        }
+        
+        currentIndex = nextTripleQuoteIndex + 3;
+        continue;
+      }
+    }
+    
+    let nextSpecialIndex = content.length;
+    const nextMath = content.indexOf('$$', currentIndex);
+    const nextCode = content.indexOf('```', currentIndex);
+    
+    if (nextMath !== -1 && nextMath < nextSpecialIndex) {
+      nextSpecialIndex = nextMath;
+    }
+    if (nextCode !== -1 && nextCode < nextSpecialIndex) {
+      nextSpecialIndex = nextCode;
+    }
+    
+    const textValue = content.substring(currentIndex, nextSpecialIndex);
+    if (textValue.trim() || textValue.includes('\n')) {
+      blocks.push({ type: 'text', value: textValue });
+    }
+    
+    currentIndex = nextSpecialIndex;
+  }
+  
+  return blocks;
+}
+
 function MarkdownRenderer({ content, cardId }) {
   if (!content) return null;
-  const parts = content.split(/\$\$/g);
+  const blocks = parseMarkdownToBlocks(content);
   return (
     <div className="markdown-body">
-      {parts.map((part, index) => {
-        if (index % 2 === 1) {
-          return <MathBlock key={index} tex={part.trim()} />;
+      {blocks.map((block, index) => {
+        if (block.type === 'math') {
+          return <MathBlock key={index} tex={block.value} />;
         }
-        return <TextBlock key={index} text={part} cardId={cardId} />;
+        if (block.type === 'mermaid') {
+          return <MermaidBlock key={index} code={block.value} />;
+        }
+        if (block.type === 'code') {
+          return <CodeBlock key={index} code={block.value} language={block.language} />;
+        }
+        return <TextBlock key={index} text={block.value} cardId={cardId} />;
       })}
     </div>
   );
