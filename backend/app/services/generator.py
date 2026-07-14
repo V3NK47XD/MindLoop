@@ -212,8 +212,8 @@ Instructions:
             "response_schema": FlashcardListGen,
         }
         
-        # Add thinking configuration for reasoning models like gemma-4-31b-it
-        if "gemma-4" in model_name or "thinking" in model_name:
+        # Add thinking configuration for reasoning models
+        if "thinking" in model_name:
             config_args["thinking_config"] = types.ThinkingConfig(
                 thinking_level="HIGH"
             )
