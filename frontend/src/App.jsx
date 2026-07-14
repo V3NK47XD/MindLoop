@@ -519,9 +519,16 @@ function App() {
     setIsGenerating(true);
     setGenerationLogs(`Uploading ${file.name} to FastAPI backend...\n`);
     
+    // Extract unique tags from PC and Phone cards to pass to backend generator
+    const existingTagsSet = new Set();
+    pcCards.forEach(c => c.tags?.forEach(t => existingTagsSet.add(t)));
+    phoneCards.forEach(c => c.tags?.forEach(t => existingTagsSet.add(t)));
+    const existingTags = Array.from(existingTagsSet);
+
     const formData = new FormData();
     formData.append('file', file);
     formData.append('model', selectedModel);
+    formData.append('existing_tags', JSON.stringify(existingTags));
 
     try {
       setGenerationLogs(prev => prev + `PDF processing started. Gemini (${selectedModel}) is analyzing pages and visual assets...\nThis might take a minute depending on PDF size...\n`);
@@ -722,28 +729,12 @@ function App() {
                   placeholder="Search question or PDF..." 
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  style={{ 
-                    flex: 1, 
-                    padding: '8px 12px', 
-                    borderRadius: '6px', 
-                    border: '1px solid var(--panel-border)', 
-                    background: 'rgba(255,255,255,0.02)',
-                    color: '#fff',
-                    fontSize: '0.8rem'
-                  }}
+                  style={{ flex: 1 }}
                 />
                 <select
                   value={selectedFilterTag}
                   onChange={(e) => setSelectedFilterTag(e.target.value)}
-                  style={{ 
-                    padding: '8px', 
-                    borderRadius: '6px', 
-                    border: '1px solid var(--panel-border)', 
-                    background: 'rgba(255,255,255,0.02)',
-                    color: '#fff',
-                    fontSize: '0.8rem',
-                    maxWidth: '120px'
-                  }}
+                  style={{ maxWidth: '140px' }}
                 >
                   <option value="All">All Tags</option>
                   {allTags.map((tag, idx) => (
@@ -834,16 +825,17 @@ function App() {
                   justifyContent: 'center', 
                   color: 'var(--text-muted)',
                   gap: '12px',
-                  background: 'rgba(255,255,255,0.01)',
+                  background: 'var(--panel-bg)',
                   borderRadius: '12px',
-                  border: '1px dashed var(--panel-border)',
+                  border: '3px dashed var(--border-color)',
+                  boxShadow: '4px 4px 0px var(--shadow-color)',
                   padding: '40px',
                   textAlign: 'center'
                 }}>
                   <Smartphone size={40} color="var(--text-muted)" style={{ opacity: 0.5 }} />
-                  <p style={{ fontSize: '0.85rem', fontWeight: '500' }}>Phone Not Connected</p>
-                  <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', maxWidth: '220px' }}>
-                    Pair your mobile app using the button in the header to synchronize flashcards.
+                  <p style={{ fontSize: '0.9rem', fontWeight: '800', textTransform: 'uppercase' }}>Phone Not Connected</p>
+                  <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', maxWidth: '240px' }}>
+                    Pair your mobile app using the notification bell screen to synchronize flashcards.
                   </p>
                 </div>
               )}

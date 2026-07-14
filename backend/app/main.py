@@ -53,7 +53,8 @@ app.include_router(sync.router)
 @app.post("/api/generate/pdf")
 async def generate_from_pdf(
     file: UploadFile = File(...),
-    model: str = Form(None)
+    model: str = Form(None),
+    existing_tags: str = Form(None)
 ):
     """
     Uploads a PDF, extracts pages + images, calls Gemini, and saves .flash files.
@@ -69,6 +70,14 @@ async def generate_from_pdf(
         )
         
     selected_model = model or settings.GEMINI_MODEL
+    
+    # Parse existing tags if provided
+    tags_list = []
+    if existing_tags:
+        try:
+            tags_list = json.loads(existing_tags)
+        except Exception:
+            pass
     
     # Create unique session paths for temporary file storage
     session_id = str(uuid.uuid4())
@@ -94,7 +103,8 @@ async def generate_from_pdf(
             pdf_path=pdf_temp_path,
             pages_data=pages_data,
             temp_img_dir=session_dir,
-            storage_dir=settings.storage_path
+            storage_dir=settings.storage_path,
+            existing_tags=tags_list
         )
         
         return {

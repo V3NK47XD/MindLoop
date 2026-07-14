@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest_all.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
 import 'package:mobile/models/flashcard.dart';
@@ -55,9 +57,82 @@ class NotificationService {
         ?.requestNotificationsPermission();
   }
 
-  // Schedule a batch of 7 future reminders (one for each interval step) containing random questions
+  // Read background alert schedule history and synchronize the checklist progression
+  Future<void> updateNotificationProgress() async {
+    final prefs = await SharedPreferences.getInstance();
+    final cards = await StorageService().getAllCards();
+    if (cards.isEmpty) return;
+
+    final allHashtags = cards
+        .expand((c) => c.tags)
+        .map((t) => t.trim())
+        .where((t) => t.isNotEmpty)
+        .toSet()
+        .toList();
+    allHashtags.sort();
+
+    List<String> shuffledTags = prefs.getStringList('shuffled_hashtags') ?? [];
+    List<String> completedTags = prefs.getStringList('completed_hashtags') ?? [];
+
+    // Reconcile active tag set
+    final setA = allHashtags.toSet();
+    final setB = shuffledTags.toSet();
+    if (setA.length != setB.length || !setA.containsAll(setB)) {
+      shuffledTags = List<String>.from(allHashtags)..shuffle();
+      completedTags = [];
+      await prefs.setStringList('shuffled_hashtags', shuffledTags);
+      await prefs.setStringList('completed_hashtags', completedTags);
+    }
+
+    final slotsRaw = prefs.getString('scheduled_slots');
+    if (slotsRaw != null) {
+      try {
+        final List<dynamic> oldSlots = jsonDecode(slotsRaw);
+        final now = DateTime.now();
+        List<dynamic> remainingSlots = [];
+        bool changed = false;
+
+        for (final slot in oldSlots) {
+          final timeStr = slot['time'] as String;
+          final time = DateTime.parse(timeStr);
+          if (time.isBefore(now)) {
+            final tag = slot['tag'] as String;
+            final isLast = slot['is_last_for_tag'] as bool? ?? false;
+            if (isLast) {
+              if (!completedTags.contains(tag)) {
+                completedTags.add(tag);
+                changed = true;
+              }
+            }
+          } else {
+            remainingSlots.add(slot);
+          }
+        }
+
+        // Reset round if all tags are marked completed
+        if (completedTags.length >= shuffledTags.length && shuffledTags.isNotEmpty) {
+          completedTags = [];
+          shuffledTags.shuffle();
+          changed = true;
+        }
+
+        if (changed || remainingSlots.length != oldSlots.length) {
+          await prefs.setStringList('shuffled_hashtags', shuffledTags);
+          await prefs.setStringList('completed_hashtags', completedTags);
+          await prefs.setString('scheduled_slots', jsonEncode(remainingSlots));
+        }
+      } catch (e) {
+        print("Error updating notification progress: $e");
+      }
+    }
+  }
+
+  // Schedule rotational hashtag reminders covering the next 7 days (capped at 48 safety limit)
   Future<void> rescheduleReminders(int frequencyHours) async {
-    // A. Cancel all previously scheduled reminders
+    // 1. Process past alerts to synchronize checklist state
+    await updateNotificationProgress();
+
+    // 2. Cancel all scheduled alerts
     await _notificationsPlugin.cancelAll();
     
     if (frequencyHours <= 0) {
@@ -65,21 +140,52 @@ class NotificationService {
       return;
     }
 
-    // B. Get all cards to pick from
+    // 3. Get all cards
     final cards = await StorageService().getAllCards();
     if (cards.isEmpty) {
       print("No cards available to schedule reminders.");
       return;
     }
 
-    final random = Random();
+    final prefs = await SharedPreferences.getInstance();
+    List<String> shuffledTags = prefs.getStringList('shuffled_hashtags') ?? [];
+    List<String> completedTags = prefs.getStringList('completed_hashtags') ?? [];
+
+    final allHashtags = cards
+        .expand((c) => c.tags)
+        .map((t) => t.trim())
+        .where((t) => t.isNotEmpty)
+        .toSet()
+        .toList();
+    allHashtags.sort();
+
+    // Reconcile active tag set
+    final setA = allHashtags.toSet();
+    final setB = shuffledTags.toSet();
+    if (setA.length != setB.length || !setA.containsAll(setB)) {
+      shuffledTags = List<String>.from(allHashtags)..shuffle();
+      completedTags = [];
+      await prefs.setStringList('shuffled_hashtags', shuffledTags);
+      await prefs.setStringList('completed_hashtags', completedTags);
+    }
+
+    if (shuffledTags.isEmpty) {
+      print("No hashtags found to schedule reminders.");
+      return;
+    }
+
+    // 4. Calculate total slots for 7 days
+    int slotsCount = (7 * 24 / frequencyHours).floor();
+    if (slotsCount > 48) slotsCount = 48; // Android safety cap
+
     final androidDetails = const AndroidNotificationDetails(
       'mindloop_reminders',
       'MindLoop Reminders',
-      channelDescription: 'Duolingo-style random flashcard question alerts',
+      channelDescription: 'Rotational hashtag flashcard alerts',
       importance: Importance.max,
       priority: Priority.high,
       playSound: true,
+      largeIcon: DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
     );
     final iosDetails = const DarwinNotificationDetails(
       presentAlert: true,
@@ -88,25 +194,86 @@ class NotificationService {
     );
     final notificationDetails = NotificationDetails(android: androidDetails, iOS: iosDetails);
 
-    print("Scheduling next 7 reminders, every $frequencyHours hours...");
+    // 5. Generate rotational schedule sequence
+    List<Map<String, dynamic>> scheduledSlotsData = [];
+    List<String> localCompleted = List<String>.from(completedTags);
+    List<String> localShuffled = List<String>.from(shuffledTags);
     
-    // C. Schedule up to 7 items in the future
-    for (int i = 1; i <= 7; i++) {
-      // Select a random card
-      final card = cards[random.nextInt(cards.length)];
-      final scheduledTime = tz.TZDateTime.now(tz.local).add(Duration(hours: frequencyHours * i));
+    // Map of tag -> list of cards left to schedule in this round
+    Map<String, List<Flashcard>> tagCardQueues = {};
+    int slotIndex = 1;
 
+    print("Scheduling next $slotsCount reminders, every $frequencyHours hours...");
+
+    while (slotIndex <= slotsCount) {
+      // Check if current round is fully complete
+      if (localCompleted.length >= localShuffled.length && localShuffled.isNotEmpty) {
+        localCompleted.clear();
+        localShuffled.shuffle();
+      }
+
+      // Find the next incomplete tag
+      String? activeTag;
+      for (final tag in localShuffled) {
+        if (!localCompleted.contains(tag)) {
+          activeTag = tag;
+          break;
+        }
+      }
+
+      if (activeTag == null) {
+        break;
+      }
+
+      // Fill card queue for activeTag if empty
+      if (!tagCardQueues.containsKey(activeTag) || tagCardQueues[activeTag]!.isEmpty) {
+        final tagCards = cards.where((c) => c.tags.contains(activeTag)).toList();
+        tagCards.shuffle();
+        tagCardQueues[activeTag] = tagCards;
+      }
+
+      final queue = tagCardQueues[activeTag]!;
+      if (queue.isEmpty) {
+        // Tag has no cards, mark completed and proceed
+        localCompleted.add(activeTag);
+        continue;
+      }
+
+      final card = queue.removeLast();
+      final scheduledTime = tz.TZDateTime.now(tz.local).add(Duration(hours: frequencyHours * slotIndex));
+
+      // Is this the last card in queue for this tag?
+      final bool isLast = queue.isEmpty;
+
+      // Schedule local notification
       await _notificationsPlugin.zonedSchedule(
-        id: i,
-        title: 'MindLoop Review!',
+        id: slotIndex,
+        title: 'MindLoop Review - #$activeTag',
         body: card.question,
         scheduledDate: scheduledTime,
         notificationDetails: notificationDetails,
         androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
         payload: card.id,
       );
-      print("Scheduled reminder #$i at $scheduledTime (Card: ${card.id})");
+
+      scheduledSlotsData.add({
+        'time': scheduledTime.toIso8601String(),
+        'tag': activeTag,
+        'is_last_for_tag': isLast,
+      });
+
+      if (isLast) {
+        localCompleted.add(activeTag);
+      }
+
+      print("Scheduled reminder #$slotIndex at $scheduledTime (Tag: $activeTag | Card: ${card.id})");
+      slotIndex++;
     }
+
+    // Save scheduled slots and updated states
+    await prefs.setString('scheduled_slots', jsonEncode(scheduledSlotsData));
+    await prefs.setStringList('shuffled_hashtags', shuffledTags);
+    await prefs.setStringList('completed_hashtags', completedTags);
   }
 
   // Helper to show an instant notification for testing
@@ -116,6 +283,7 @@ class NotificationService {
       'Test Channel',
       importance: Importance.max,
       priority: Priority.high,
+      largeIcon: DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
     );
     const NotificationDetails details = NotificationDetails(android: androidDetails);
     await _notificationsPlugin.show(
