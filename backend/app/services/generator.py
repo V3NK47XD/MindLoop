@@ -151,7 +151,7 @@ Instructions:
 2. Strictly use information present in the PDF only. Do NOT include outside facts or hallucinate beyond the source text.
 3. Do NOT frame standard Q&A questions. Instead, split the PDF into logical chunks of topics.
    - For the `question` field of each flashcard, generate a headline or news/blog article style Headline representing that topic chunk (e.g. 'KaTeX Equation Engine Implementation' or 'Thermal Properties of High-Frequency Alloys').
-   - For the `answer` field, provide a detailed, educational, and clear summary of that topic chunk, utilizing bold text, bullet points, and KaTeX equations where appropriate.
+   - For the `answer` field, provide a detailed, educational, and clear summary of that topic chunk, utilizing bold text, bullet points, KaTeX equations, code blocks, and Mermaid diagrams where appropriate to maximize clarity.
 4. Limit the tags array for each flashcard to EXACTLY 1 tag. Do NOT specify more than 1 tag per flashcard.
 5. Here is a list of existing hashtags currently in the user's library: {existing_tags_str}. Try to reuse any of these existing tags if the topic matches them. However, only reuse a tag if it is appropriate. If the topic is quite different, create and use a new hashtag.
 6. If a concept is best explained by a diagram, graph, or formula in the PDF:
@@ -162,7 +162,8 @@ Instructions:
 8. Format mathematical equations cleanly using LaTeX math notation:
    - Use standard `$` for inline math (e.g. $E=mc^2$)
    - Use `$$` for block display equations on their own lines.
-9. Provide output strictly matching the requested JSON schema.
+9. Format code snippets cleanly using fenced markdown blocks with language syntax highlighting (e.g. ```python\\n...\\n```). Format flowcharts, process logic, system architecture, or state machines using clean Mermaid diagrams (e.g. ```mermaid\\ngraph TD\\n...\\n```).
+10. Provide output strictly matching the requested JSON schema.
 """
     else:
         prompt = f"""
@@ -176,7 +177,7 @@ Instructions:
 2. Strictly use information present in the PDF only. Do NOT include outside facts or hallucinate beyond the source text.
 3. Do NOT frame standard Q&A questions. Instead, split the PDF into logical chunks of topics.
    - For the `question` field of each flashcard, generate a headline or news/blog article style Headline representing that topic chunk (e.g. 'KaTeX Equation Engine Implementation' or 'Thermal Properties of High-Frequency Alloys').
-   - For the `answer` field, provide a detailed, educational, and clear summary of that topic chunk, utilizing bold text, bullet points, and KaTeX equations where appropriate.
+   - For the `answer` field, provide a detailed, educational, and clear summary of that topic chunk, utilizing bold text, bullet points, KaTeX equations, code blocks, and Mermaid diagrams where appropriate to maximize clarity.
 4. Limit the tags array for each flashcard to EXACTLY 1 tag. Do NOT specify more than 1 tag per flashcard.
 5. Here is a list of existing hashtags currently in the user's library: {existing_tags_str}. Try to reuse any of these existing tags if the topic matches them. However, only reuse a tag if it is appropriate. If the topic is quite different, create and use a new hashtag.
 6. If a concept is best explained by a diagram, graph, or formula in the PDF:
@@ -187,7 +188,8 @@ Instructions:
 8. Format mathematical equations cleanly using LaTeX math notation:
    - Use standard `$` for inline math (e.g. $E=mc^2$)
    - Use `$$` for block display equations on their own lines.
-9. Provide output strictly matching the requested JSON schema.
+9. Format code snippets cleanly using fenced markdown blocks with language syntax highlighting (e.g. ```python\\n...\\n```). Format flowcharts, process logic, system architecture, or state machines using clean Mermaid diagrams (e.g. ```mermaid\\ngraph TD\\n...\\n```).
+10. Provide output strictly matching the requested JSON schema.
 """
 
     try:
