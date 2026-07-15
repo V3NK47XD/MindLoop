@@ -144,22 +144,32 @@ class CardUpdate(BaseModel):
     tags: list[str]
     source_pdf: str
     pdf_ref_line: int
+    attachments: list[str] = []
 
 from app.services.generator import compute_card_hash
 
 @app.post("/api/cards")
-def create_card_manually(card_data: ManualCardCreate):
+def create_card_manually(
+    card_data: str = Form(...),
+    images: list[UploadFile] = File([])
+):
     """
     Creates a new flashcard manually and packages it into <card_hash>.flash.
     """
-    if len(card_data.tags) > 1:
+    try:
+        data_dict = json.loads(card_data)
+        card_data_parsed = ManualCardCreate(**data_dict)
+    except Exception as parse_err:
+        raise HTTPException(status_code=400, detail=f"Invalid card data: {parse_err}")
+
+    if len(card_data_parsed.tags) > 1:
         raise HTTPException(
             status_code=400,
             detail="A card can have at most exactly 1 tag."
         )
         
     # Calculate hash
-    card_hash = compute_card_hash(card_data.question, card_data.answer, card_data.tags)
+    card_hash = compute_card_hash(card_data_parsed.question, card_data_parsed.answer, card_data_parsed.tags)
     created_at = datetime.utcnow().isoformat() + "Z"
     
     # Save target path
@@ -173,35 +183,74 @@ def create_card_manually(card_data: ManualCardCreate):
             detail="A flashcard with identical content already exists."
         )
         
+    # Standardize attachments paths
+    attachments = []
+    
     # Build metadata.json
     metadata = {
         "id": card_hash,
-        "question": card_data.question,
+        "question": card_data_parsed.question,
         "created_at": created_at,
-        "tags": card_data.tags,
-        "source_pdf": card_data.source_pdf,
-        "pdf_ref_line": card_data.pdf_ref_line,
-        "attachments": []
+        "tags": card_data_parsed.tags,
+        "source_pdf": card_data_parsed.source_pdf,
+        "pdf_ref_line": card_data_parsed.pdf_ref_line,
+        "attachments": attachments
     }
     
     try:
         os.makedirs(settings.storage_path, exist_ok=True)
+        
+        # Save uploaded images to a temp folder first to write to zip
+        temp_dir = settings.temp_path / f"new_{card_hash}"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        
+        for img in images:
+            if img.filename:
+                target_img_path = temp_dir / img.filename
+                with open(target_img_path, "wb") as buffer:
+                    shutil.copyfileobj(img.file, buffer)
+                attachments.append(f"assets/{img.filename}")
+                
         with zipfile.ZipFile(flash_path, "w", zipfile.ZIP_DEFLATED) as zip_file:
             zip_file.writestr("metadata.json", json.dumps(metadata, indent=2))
-            zip_file.writestr("content.md", card_data.answer)
+            zip_file.writestr("content.md", card_data_parsed.answer)
+            
+            # Write assets
+            for img_name in os.listdir(temp_dir):
+                zip_file.write(temp_dir / img_name, arcname=f"assets/{img_name}")
+                
+        # Clean up temp folder
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
             
         logger.info(f"Manually created and packaged flashcard {card_hash}")
         return {"status": "success", "card_hash": card_hash}
     except Exception as e:
         logger.error(f"Failed to save manual flashcard: {e}")
+        try:
+            temp_dir = settings.temp_path / f"new_{card_hash}"
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir)
+        except:
+            pass
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/api/cards/{card_hash}")
-def update_card(card_hash: str, card_data: CardUpdate):
+def update_card(
+    card_hash: str,
+    card_data: str = Form(...),
+    images: list[UploadFile] = File([])
+):
     """
     Edits an existing flashcard. If content changes, deletes old file and packages into new hash.
     """
-    if len(card_data.tags) > 1:
+    try:
+        data_dict = json.loads(card_data)
+        card_data_parsed = CardUpdate(**data_dict)
+    except Exception as parse_err:
+        raise HTTPException(status_code=400, detail=f"Invalid card data: {parse_err}")
+
+    if len(card_data_parsed.tags) > 1:
         raise HTTPException(
             status_code=400,
             detail="A card can have at most exactly 1 tag."
@@ -212,11 +261,10 @@ def update_card(card_hash: str, card_data: CardUpdate):
         raise HTTPException(status_code=404, detail="Flashcard not found")
         
     # Calculate new hash
-    new_card_hash = compute_card_hash(card_data.question, card_data.answer, card_data.tags)
+    new_card_hash = compute_card_hash(card_data_parsed.question, card_data_parsed.answer, card_data_parsed.tags)
     
     # Read existing metadata to preserve fields like created_at, attachments, etc.
     try:
-        existing_attachments = []
         existing_created_at = datetime.utcnow().isoformat() + "Z"
         temp_dir = settings.temp_path / f"edit_{card_hash}"
         temp_dir.mkdir(parents=True, exist_ok=True)
@@ -225,22 +273,44 @@ def update_card(card_hash: str, card_data: CardUpdate):
             metadata_str = old_zip.read("metadata.json").decode("utf-8")
             old_metadata = json.loads(metadata_str)
             existing_created_at = old_metadata.get("created_at", existing_created_at)
-            existing_attachments = old_metadata.get("attachments", [])
             
             # Extract any assets
             for name in old_zip.namelist():
                 if name.startswith("assets/"):
                     old_zip.extract(name, temp_dir)
                     
+        # Filter temp assets: only keep the ones that are in card_data_parsed.attachments
+        extracted_assets_dir = temp_dir / "assets"
+        active_attachments = []
+        if extracted_assets_dir.exists():
+            for asset_file in list(extracted_assets_dir.glob("*")):
+                rel_name = f"assets/{asset_file.name}"
+                if rel_name in card_data_parsed.attachments:
+                    active_attachments.append(rel_name)
+                else:
+                    # User deleted this attachment
+                    os.remove(asset_file)
+                    
+        # Save newly uploaded images
+        for img in images:
+            if img.filename:
+                extracted_assets_dir.mkdir(parents=True, exist_ok=True)
+                target_img_path = extracted_assets_dir / img.filename
+                with open(target_img_path, "wb") as buffer:
+                    shutil.copyfileobj(img.file, buffer)
+                rel_name = f"assets/{img.filename}"
+                if rel_name not in active_attachments:
+                    active_attachments.append(rel_name)
+                    
         # Build metadata.json
         metadata = {
             "id": new_card_hash,
-            "question": card_data.question,
+            "question": card_data_parsed.question,
             "created_at": existing_created_at,
-            "tags": card_data.tags,
-            "source_pdf": card_data.source_pdf,
-            "pdf_ref_line": card_data.pdf_ref_line,
-            "attachments": existing_attachments
+            "tags": card_data_parsed.tags,
+            "source_pdf": card_data_parsed.source_pdf,
+            "pdf_ref_line": card_data_parsed.pdf_ref_line,
+            "attachments": active_attachments
         }
         
         new_flash_path = settings.storage_path / f"{new_card_hash}.flash"
@@ -248,10 +318,9 @@ def update_card(card_hash: str, card_data: CardUpdate):
         # Package into new ZIP (or overwrite if same hash)
         with zipfile.ZipFile(new_flash_path, "w", zipfile.ZIP_DEFLATED) as new_zip:
             new_zip.writestr("metadata.json", json.dumps(metadata, indent=2))
-            new_zip.writestr("content.md", card_data.answer)
+            new_zip.writestr("content.md", card_data_parsed.answer)
             
-            # Re-add extracted assets
-            extracted_assets_dir = temp_dir / "assets"
+            # Re-add active assets
             if extracted_assets_dir.exists():
                 for asset_file in extracted_assets_dir.glob("*"):
                     new_zip.write(asset_file, arcname=f"assets/{asset_file.name}")

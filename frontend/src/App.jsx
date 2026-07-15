@@ -301,6 +301,8 @@ function App() {
   const [wsPdfRefLine, setWsPdfRefLine] = useState(0);
   const [wsError, setWsError] = useState('');
   const [isSavingWs, setIsSavingWs] = useState(false);
+  const [wsImages, setWsImages] = useState([]);
+  const [wsExistingAttachments, setWsExistingAttachments] = useState([]);
   
   // File drag & drop
   const [dragActive, setDragActive] = useState(false);
@@ -646,6 +648,8 @@ function App() {
         setWsTag(data.tags && data.tags.length > 0 ? data.tags[0] : '');
         setWsSourcePdf(data.source_pdf || 'Manual');
         setWsPdfRefLine(data.pdf_ref_line || 0);
+        setWsExistingAttachments(data.attachments || []);
+        setWsImages([]);
         setSelectedWorkspaceCard(card);
         setCurrentView('workspace');
       } else {
@@ -679,8 +683,16 @@ function App() {
       answer: wsAnswer,
       tags: tags,
       source_pdf: wsSourcePdf,
-      pdf_ref_line: parseInt(wsPdfRefLine) || 0
+      pdf_ref_line: parseInt(wsPdfRefLine) || 0,
+      attachments: wsExistingAttachments
     };
+
+    const formData = new FormData();
+    formData.append("card_data", JSON.stringify(payload));
+    
+    wsImages.forEach(imgFile => {
+      formData.append("images", imgFile);
+    });
     
     try {
       let res;
@@ -688,15 +700,13 @@ function App() {
         // Edit existing
         res = await fetch(`${API_BASE}/api/cards/${selectedWorkspaceCard.id}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+          body: formData
         });
       } else {
         // Create new
         res = await fetch(`${API_BASE}/api/cards`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+          body: formData
         });
       }
       
@@ -738,7 +748,7 @@ function App() {
           <section className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <h2>PC Storage Manager ({filteredPcCards.length} cards)</h2>
-              <button className="btn btn-primary" onClick={() => { setSelectedWorkspaceCard(null); setWsQuestion(''); setWsAnswer(''); setWsTag(''); setWsSourcePdf('Manual'); setWsPdfRefLine(0); setWsError(''); setCurrentView('workspace'); }}>
+              <button className="btn btn-primary" onClick={() => { setSelectedWorkspaceCard(null); setWsQuestion(''); setWsAnswer(''); setWsTag(''); setWsSourcePdf('Manual'); setWsPdfRefLine(0); setWsExistingAttachments([]); setWsImages([]); setWsError(''); setCurrentView('workspace'); }}>
                 Create Manual Card
               </button>
             </div>
@@ -946,6 +956,113 @@ function App() {
                   </div>
                 </div>
               </div>
+              
+              {/* Images & Diagrams Section */}
+              <div style={{ marginTop: '20px', borderTop: '2.5px dashed var(--border-color)', paddingTop: '20px', textAlign: 'left' }}>
+                <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px' }}>Images / Diagrams (Optional)</label>
+                <div style={{ display: 'flex', gap: '16px', alignItems: 'center', marginBottom: '16px' }}>
+                  <input 
+                    type="file" 
+                    multiple 
+                    accept="image/*" 
+                    id="ws-image-upload"
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      if (e.target.files) {
+                        setWsImages(prev => [...prev, ...Array.from(e.target.files)]);
+                      }
+                    }}
+                  />
+                  <label htmlFor="ws-image-upload" className="btn btn-secondary" style={{ cursor: 'pointer', margin: 0 }}>
+                    Select Image Files
+                  </label>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    Choose images to package inside the flashcard.
+                  </span>
+                </div>
+
+                {/* Combined list of files */}
+                {((wsExistingAttachments && wsExistingAttachments.length > 0) || (wsImages && wsImages.length > 0)) && (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', background: 'var(--panel-bg)', padding: '16px', borderRadius: '8px', border: '1.5px solid var(--border-color)' }}>
+                    {/* Existing attachments */}
+                    <div>
+                      <h4 style={{ fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '8px', textTransform: 'uppercase' }}>Active Card Attachments ({wsExistingAttachments.length})</h4>
+                      {wsExistingAttachments.length === 0 ? (
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>No active attachments.</span>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {wsExistingAttachments.map((att, i) => {
+                            const filename = att.split('/').pop();
+                            const imageUrl = selectedWorkspaceCard ? `${API_BASE}/api/cards/${selectedWorkspaceCard.id}/assets/${filename}` : '';
+                            return (
+                              <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', border: '1px solid var(--panel-border)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
+                                  {imageUrl && <img src={imageUrl} alt={filename} style={{ width: '32px', height: '32px', borderRadius: '4px', objectFit: 'cover', border: '1px solid var(--border-color)' }} />}
+                                  <span style={{ fontSize: '0.75rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={filename}>{filename}</span>
+                                </div>
+                                <div style={{ display: 'flex', gap: '6px' }}>
+                                  <button 
+                                    className="btn btn-secondary" 
+                                    style={{ padding: '2px 6px', fontSize: '0.7rem' }}
+                                    onClick={() => setWsAnswer(prev => prev + `\n![${filename.split('.')[0]}](assets/${filename})`)}
+                                  >
+                                    Insert Ref
+                                  </button>
+                                  <button 
+                                    className="btn btn-danger" 
+                                    style={{ padding: '2px 6px', fontSize: '0.7rem', background: 'var(--red)', color: '#fff' }}
+                                    onClick={() => setWsExistingAttachments(prev => prev.filter(a => a !== att))}
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* New uploads */}
+                    <div>
+                      <h4 style={{ fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '8px', textTransform: 'uppercase' }}>New Uploads ({wsImages.length})</h4>
+                      {wsImages.length === 0 ? (
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>No new files added.</span>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {wsImages.map((file, i) => {
+                            const tempUrl = URL.createObjectURL(file);
+                            return (
+                              <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', border: '1px solid var(--panel-border)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
+                                  <img src={tempUrl} alt={file.name} style={{ width: '32px', height: '32px', borderRadius: '4px', objectFit: 'cover', border: '1px solid var(--border-color)' }} />
+                                  <span style={{ fontSize: '0.75rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={file.name}>{file.name}</span>
+                                </div>
+                                <div style={{ display: 'flex', gap: '6px' }}>
+                                  <button 
+                                    className="btn btn-secondary" 
+                                    style={{ padding: '2px 6px', fontSize: '0.7rem' }}
+                                    onClick={() => setWsAnswer(prev => prev + `\n![${file.name.split('.')[0]}](assets/${file.name})`)}
+                                  >
+                                    Insert Ref
+                                  </button>
+                                  <button 
+                                    className="btn btn-danger" 
+                                    style={{ padding: '2px 6px', fontSize: '0.7rem', background: 'var(--red)', color: '#fff' }}
+                                    onClick={() => setWsImages(prev => prev.filter((_, idx) => idx !== i))}
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '12px' }}>
@@ -1003,7 +1120,7 @@ function App() {
             </div>
           )}
 
-          <button className="btn btn-secondary" onClick={() => { setSelectedWorkspaceCard(null); setWsQuestion(''); setWsAnswer(''); setWsTag(''); setWsSourcePdf('Manual'); setWsPdfRefLine(0); setWsError(''); setCurrentView('workspace'); }} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button className="btn btn-secondary" onClick={() => { setSelectedWorkspaceCard(null); setWsQuestion(''); setWsAnswer(''); setWsTag(''); setWsSourcePdf('Manual'); setWsPdfRefLine(0); setWsExistingAttachments([]); setWsImages([]); setWsError(''); setCurrentView('workspace'); }} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Plus size={18} />
             Workspace
           </button>
