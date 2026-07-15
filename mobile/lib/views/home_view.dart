@@ -172,17 +172,6 @@ class _HomeViewState extends State<HomeView> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         foregroundColor: textColor,
-        actions: [
-          IconButton(
-            icon: Icon(Icons.notifications_active_outlined, color: textColor),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const NotificationsView()),
-              );
-            },
-          ),
-        ],
       ),
       body: PaperBackground(
         isDark: isDark,

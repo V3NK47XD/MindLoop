@@ -386,11 +386,19 @@ class _NotificationsViewState extends State<NotificationsView> {
                                     return;
                                   }
                                   final firstCard = cards.first;
-                                  await _notificationService.showTestNotification(
+                                  await _notificationService.scheduleTestNotificationAfter5Seconds(
                                     'MindLoop Review!',
                                     firstCard.question,
                                     firstCard.id,
                                   );
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('Test notification scheduled! Close the app now to test background delivery. Firing in 5s...'),
+                                        duration: Duration(seconds: 4),
+                                      ),
+                                    );
+                                  }
                                 },
                               ),
                             ),

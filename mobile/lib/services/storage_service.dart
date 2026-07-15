@@ -25,7 +25,7 @@ class StorageService {
 
     return await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE cards (
@@ -39,6 +39,28 @@ class StorageService {
             folder_path TEXT
           )
         ''');
+        await db.execute('''
+          CREATE TABLE notifications_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            card_id TEXT,
+            title TEXT,
+            body TEXT,
+            scheduled_time TEXT
+          )
+        ''');
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          await db.execute('''
+            CREATE TABLE notifications_history (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              card_id TEXT,
+              title TEXT,
+              body TEXT,
+              scheduled_time TEXT
+            )
+          ''');
+        }
       },
     );
   }
@@ -195,5 +217,48 @@ class StorageService {
     }
 
     return flashcard;
+  }
+
+  // Log a notification in the history
+  Future<void> logNotification(String cardId, String title, String body, DateTime scheduledTime) async {
+    final db = await database;
+    await db.insert(
+      'notifications_history',
+      {
+        'card_id': cardId,
+        'title': title,
+        'body': body,
+        'scheduled_time': scheduledTime.toIso8601String(),
+      },
+    );
+  }
+
+  // Get notification history (where scheduled_time <= now)
+  Future<List<Map<String, dynamic>>> getNotificationHistory() async {
+    final db = await database;
+    final nowStr = DateTime.now().toIso8601String();
+    return await db.query(
+      'notifications_history',
+      where: 'scheduled_time <= ?',
+      whereArgs: [nowStr],
+      orderBy: 'scheduled_time DESC',
+    );
+  }
+  
+  // Clear notification history
+  Future<void> clearNotificationHistory() async {
+    final db = await database;
+    await db.delete('notifications_history');
+  }
+
+  // Clear future notifications from history
+  Future<void> clearFutureNotifications() async {
+    final db = await database;
+    final nowStr = DateTime.now().toIso8601String();
+    await db.delete(
+      'notifications_history',
+      where: 'scheduled_time > ?',
+      whereArgs: [nowStr],
+    );
   }
 }
