@@ -54,6 +54,9 @@ def update_device_library(device_id: str, req: LibraryStateRequest):
     if device_id not in device_sync_queues:
         device_sync_queues[device_id] = []
         
+    from app.routers.pairing import notify_listeners
+    notify_listeners()
+        
     return {"status": "success", "count": len(req.card_hashes)}
 
 @router.get("/device/{device_id}/compare")

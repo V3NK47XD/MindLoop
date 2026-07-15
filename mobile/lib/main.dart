@@ -5,6 +5,7 @@ import 'package:mobile/services/storage_service.dart';
 import 'package:mobile/services/sync_service.dart';
 import 'package:mobile/services/notification_service.dart';
 import 'package:mobile/views/card_view.dart';
+import 'package:mobile/views/main_navigation_view.dart';
 import 'package:mobile/views/home_view.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -83,7 +84,7 @@ class MindLoopApp extends StatelessWidget {
               centerTitle: true,
             ),
           ),
-          home: const HomeView(),
+          home: const MainNavigationView(),
         );
       },
     );

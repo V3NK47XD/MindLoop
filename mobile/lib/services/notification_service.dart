@@ -5,6 +5,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest_all.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
+import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:mobile/models/flashcard.dart';
 import 'package:mobile/services/storage_service.dart';
 
@@ -22,6 +23,14 @@ class NotificationService {
   Future<void> init() async {
     // 1. Initialize Timezones
     tz.initializeTimeZones();
+    try {
+      final timeZoneInfo = await FlutterTimezone.getLocalTimezone();
+      final String timeZoneName = timeZoneInfo.identifier;
+      tz.setLocalLocation(tz.getLocation(timeZoneName));
+      print("Local timezone initialized: $timeZoneName");
+    } catch (e) {
+      print("Could not initialize local timezone, defaulting to UTC: $e");
+    }
 
     // 2. Android Initialization
     const AndroidInitializationSettings initializationSettingsAndroid =
@@ -52,9 +61,11 @@ class NotificationService {
     );
 
     // Request permissions for Android 13+
-    await _notificationsPlugin
-        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-        ?.requestNotificationsPermission();
+    final androidPlugin = _notificationsPlugin
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+        
+    await androidPlugin?.requestNotificationsPermission();
+    await androidPlugin?.requestExactAlarmsPermission();
   }
 
   // Read background alert schedule history and synchronize the checklist progression
@@ -134,6 +145,7 @@ class NotificationService {
 
     // 2. Cancel all scheduled alerts
     await _notificationsPlugin.cancelAll();
+    await StorageService().clearFutureNotifications();
     
     if (frequencyHours <= 0) {
       print("Reminders disabled (frequency set to 0).");
@@ -183,7 +195,7 @@ class NotificationService {
       'MindLoop Reminders',
       channelDescription: 'Rotational hashtag flashcard alerts',
       importance: Importance.max,
-      priority: Priority.high,
+      priority: Priority.max,
       playSound: true,
       largeIcon: DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
     );
@@ -256,6 +268,14 @@ class NotificationService {
         payload: card.id,
       );
 
+      // Log notification history
+      await StorageService().logNotification(
+        card.id,
+        'MindLoop Review - #$activeTag',
+        card.question,
+        scheduledTime,
+      );
+
       scheduledSlotsData.add({
         'time': scheduledTime.toIso8601String(),
         'tag': activeTag,
@@ -276,22 +296,41 @@ class NotificationService {
     await prefs.setStringList('completed_hashtags', completedTags);
   }
 
-  // Helper to show an instant notification for testing
-  Future<void> showTestNotification(String title, String body, String payload) async {
+  // Helper to schedule a test notification after 5 seconds
+  Future<void> scheduleTestNotificationAfter5Seconds(String title, String body, String payload) async {
     const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
       'mindloop_test',
       'Test Channel',
       importance: Importance.max,
-      priority: Priority.high,
+      priority: Priority.max,
       largeIcon: DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
     );
-    const NotificationDetails details = NotificationDetails(android: androidDetails);
-    await _notificationsPlugin.show(
+    const DarwinNotificationDetails iosDetails = DarwinNotificationDetails(
+      presentAlert: true,
+      presentBadge: true,
+      presentSound: true,
+    );
+    const NotificationDetails details = NotificationDetails(android: androidDetails, iOS: iosDetails);
+    
+    final scheduledTime = tz.TZDateTime.now(tz.local).add(const Duration(seconds: 5));
+    
+    await _notificationsPlugin.zonedSchedule(
       id: 999,
       title: title,
       body: body,
+      scheduledDate: scheduledTime,
       notificationDetails: details,
+      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
       payload: payload,
     );
+    
+    // Log test notification in history
+    await StorageService().logNotification(
+      payload,
+      title,
+      body,
+      scheduledTime,
+    );
+    print("Scheduled test notification to fire in 5 seconds at: $scheduledTime");
   }
 }

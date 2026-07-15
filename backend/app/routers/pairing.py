@@ -4,6 +4,7 @@ import json
 import logging
 import uuid
 import io
+import time
 import qrcode
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
@@ -20,6 +21,7 @@ class DeviceSession(BaseModel):
     device_name: str
     ip: str
     paired_at: str
+    last_seen: float = 0.0
 
 # In-memory storage for active pairing code and paired devices
 class PairingState:
@@ -123,7 +125,8 @@ def pair_device(req: PairRequest):
         device_id=req.device_id,
         device_name=req.device_name,
         ip=req.client_ip,
-        paired_at=datetime.datetime.utcnow().isoformat() + "Z"
+        paired_at=datetime.datetime.utcnow().isoformat() + "Z",
+        last_seen=time.time()
     )
     pairing_state.paired_devices[req.device_id] = session
     logger.info(f"Paired device {req.device_name} ({req.device_id}) at {req.client_ip}")
@@ -135,14 +138,38 @@ def get_paired_devices():
     """List currently connected/paired mobile devices."""
     return list(pairing_state.paired_devices.values())
 
-@router.post("/disconnect/{device_id}")
-def disconnect_device(device_id: str):
-    """The mobile phone calls this to disconnect itself from the PC."""
-    if device_id in pairing_state.paired_devices:
-        disconnected = pairing_state.paired_devices.pop(device_id)
-        logger.info(f"Disconnected device: {disconnected.device_name} ({device_id})")
+class HeartbeatRequest(BaseModel):
+    device_name: str
+    client_ip: str
+
+@router.post("/heartbeat/{device_id}")
+def device_heartbeat(device_id: str, req: HeartbeatRequest):
+    now = time.time()
+    is_new = False
+    
+    if device_id not in pairing_state.paired_devices:
+        is_new = True
+        import datetime
+        session = DeviceSession(
+            device_id=device_id,
+            device_name=req.device_name,
+            ip=req.client_ip,
+            paired_at=datetime.datetime.utcnow().isoformat() + "Z",
+            last_seen=now
+        )
+        pairing_state.paired_devices[device_id] = session
+        logger.info(f"Reconnected device {req.device_name} ({device_id}) via heartbeat.")
+    else:
+        session = pairing_state.paired_devices[device_id]
+        session.last_seen = now
+        # Keep name and IP fresh
+        session.ip = req.client_ip
+        session.device_name = req.device_name
+        
+    if is_new:
         notify_listeners()
-    return {"status": "success"}
+        
+    return {"status": "success", "device_id": device_id}
 
 import asyncio
 
@@ -206,6 +233,30 @@ def start_udp_broadcast_listener():
     pairing_state.stop_udp.clear()
     pairing_state.udp_thread = threading.Thread(target=listen_loop, daemon=True)
     pairing_state.udp_thread.start()
+
+    # Heartbeat Pruner Loop
+    def prune_loop():
+        logger.info("Heartbeat pruner thread started.")
+        while not pairing_state.stop_udp.is_set():
+            # Sleep in small increments to respond to stop signals quickly
+            for _ in range(30):
+                if pairing_state.stop_udp.is_set():
+                    break
+                time.sleep(0.1)
+            
+            now = time.time()
+            to_delete = []
+            for dev_id, session in list(pairing_state.paired_devices.items()):
+                if session.last_seen > 0 and (now - session.last_seen) > 8.0:
+                    to_delete.append(dev_id)
+            if to_delete:
+                for dev_id in to_delete:
+                    pairing_state.paired_devices.pop(dev_id, None)
+                    logger.info(f"Heartbeat timeout. Pruned inactive device: {dev_id}")
+                notify_listeners()
+        logger.info("Heartbeat pruner thread stopped.")
+
+    threading.Thread(target=prune_loop, daemon=True).start()
 
 def stop_udp_broadcast_listener():
     if pairing_state.udp_thread:
