@@ -73,8 +73,16 @@ class SyncService extends ChangeNotifier {
       return;
     }
     try {
-      final uri = Uri.parse("http://$_serverIp:$_serverPort/api/pairing/devices");
-      final response = await http.get(uri).timeout(const Duration(seconds: 1));
+      final uri = Uri.parse("http://$_serverIp:$_serverPort/api/pairing/heartbeat/$_deviceId");
+      final response = await http.post(
+        uri,
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({
+          "device_name": _deviceName ?? "Flutter Client",
+          "client_ip": "127.0.0.1",
+        }),
+      ).timeout(const Duration(seconds: 1));
+      
       final reachable = (response.statusCode == 200);
       if (_isPcReachable != reachable) {
         _isPcReachable = reachable;

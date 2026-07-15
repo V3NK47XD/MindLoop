@@ -396,6 +396,7 @@ function App() {
               fetchComparison(nextActive.device_id);
             } else {
               setPhoneCards([]);
+              setSelectedHashes(new Set());
             }
           }
         } catch (err) {
@@ -418,6 +419,7 @@ function App() {
       fetchComparison();
     } else {
       setPhoneCards([]);
+      setSelectedHashes(new Set());
     }
   }, [activeDevice]);
 
