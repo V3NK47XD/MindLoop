@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -26,9 +27,31 @@ class _HomeViewState extends State<HomeView> {
   List<Flashcard> _cards = [];
   List<String> _allTags = [];
   List<String> _selectedTags = [];
+  Map<String, int> _cardViewCounts = {};
   String _searchQuery = '';
-  int _frequencyHours = 3; // Default every 3 hours
+  int _frequencyHours = 3;
   bool _isLoading = true;
+
+  Future<void> _loadViewCounts() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final countsRaw = prefs.getString('card_view_counts');
+      Map<String, int> counts = {};
+      if (countsRaw != null) {
+        final Map<String, dynamic> decoded = jsonDecode(countsRaw);
+        decoded.forEach((key, value) {
+          if (value is int) {
+            counts[key] = value;
+          }
+        });
+      }
+      if (mounted) {
+        setState(() {
+          _cardViewCounts = counts;
+        });
+      }
+    } catch (_) {}
+  }
 
   @override
   void initState() {
@@ -75,6 +98,21 @@ class _HomeViewState extends State<HomeView> {
     final cards = await _storageService.searchCards('', filterTags: _selectedTags);
     final tags = await _storageService.getAllTags();
 
+    // Load view counts
+    final prefs = await SharedPreferences.getInstance();
+    final countsRaw = prefs.getString('card_view_counts');
+    Map<String, int> counts = {};
+    if (countsRaw != null) {
+      try {
+        final Map<String, dynamic> decoded = jsonDecode(countsRaw);
+        decoded.forEach((key, value) {
+          if (value is int) {
+            counts[key] = value;
+          }
+        });
+      } catch (_) {}
+    }
+
     // Apply BM25 search ranking
     List<Flashcard> finalCards = cards;
     if (_searchQuery.trim().isNotEmpty) {
@@ -85,6 +123,7 @@ class _HomeViewState extends State<HomeView> {
       setState(() {
         _cards = finalCards;
         _allTags = tags;
+        _cardViewCounts = counts;
         _isLoading = false;
       });
     }
@@ -402,6 +441,7 @@ class _HomeViewState extends State<HomeView> {
                                 itemCount: _cards.length,
                                 itemBuilder: (context, idx) {
                                   final card = _cards[idx];
+                                  final viewCount = _cardViewCounts[card.id] ?? 0;
                                   return Container(
                                     margin: const EdgeInsets.only(bottom: 14),
                                     decoration: BoxDecoration(
@@ -444,37 +484,60 @@ class _HomeViewState extends State<HomeView> {
                                                 ),
                                               ],
                                             ),
-                                            if (card.tags.isNotEmpty) ...[
+                                            if (card.tags.isNotEmpty || viewCount > 0) ...[
                                               const SizedBox(height: 8),
                                               Wrap(
                                                 spacing: 6,
                                                 runSpacing: 4,
-                                                children: card.tags.take(3).map((tag) {
-                                                  final col = _getTagColor(tag);
-                                                  return Container(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                                                    decoration: BoxDecoration(
-                                                      color: col.withOpacity(0.15),
-                                                      borderRadius: BorderRadius.circular(4),
-                                                      border: Border.all(color: col, width: 2.0),
+                                                children: [
+                                                  ...card.tags.take(3).map((tag) {
+                                                    final col = _getTagColor(tag);
+                                                    return Container(
+                                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                                                      decoration: BoxDecoration(
+                                                        color: col.withOpacity(0.15),
+                                                        borderRadius: BorderRadius.circular(4),
+                                                        border: Border.all(color: col, width: 2.0),
+                                                      ),
+                                                      child: Text(
+                                                        '#$tag',
+                                                        style: TextStyle(color: col, fontSize: 10, fontWeight: FontWeight.w900),
+                                                      ),
+                                                    );
+                                                  }).toList(),
+                                                  if (viewCount > 0)
+                                                    Container(
+                                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.amber.withOpacity(0.15),
+                                                        borderRadius: BorderRadius.circular(4),
+                                                        border: Border.all(color: Colors.amber[800] ?? Colors.amber, width: 2.0),
+                                                      ),
+                                                      child: Row(
+                                                        mainAxisSize: MainAxisSize.min,
+                                                        children: [
+                                                          Icon(Icons.remove_red_eye_outlined, size: 12, color: Colors.amber[800] ?? Colors.amber),
+                                                          const SizedBox(width: 4),
+                                                          Text(
+                                                            '$viewCount',
+                                                            style: TextStyle(color: Colors.amber[800] ?? Colors.amber, fontSize: 10, fontWeight: FontWeight.w900),
+                                                          ),
+                                                        ],
+                                                      ),
                                                     ),
-                                                    child: Text(
-                                                      '#$tag',
-                                                      style: TextStyle(color: col, fontSize: 10, fontWeight: FontWeight.w900),
-                                                    ),
-                                                  );
-                                                }).toList(),
+                                                ],
                                               ),
                                             ],
                                           ],
                                         ),
                                       ),
                                       trailing: Icon(Icons.arrow_forward_ios, size: 14, color: textColor),
-                                      onTap: () {
-                                        Navigator.push(
+                                      onTap: () async {
+                                        await Navigator.push(
                                           context,
                                           MaterialPageRoute(builder: (context) => CardView(card: card)),
                                         );
+                                        _loadViewCounts();
                                       },
                                       onLongPress: () => _handleDeleteCard(card.id),
                                     ),
