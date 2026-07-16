@@ -4,6 +4,7 @@ import 'package:archive/archive.dart';
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:mobile/models/flashcard.dart';
 
 class StorageService {
@@ -165,6 +166,19 @@ class StorageService {
       where: 'id = ?',
       whereArgs: [id],
     );
+
+    // Remove view count record if exists
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final countsRaw = prefs.getString('card_view_counts');
+      if (countsRaw != null) {
+        final Map<String, dynamic> counts = jsonDecode(countsRaw);
+        if (counts.containsKey(id)) {
+          counts.remove(id);
+          await prefs.setString('card_view_counts', jsonEncode(counts));
+        }
+      }
+    } catch (_) {}
   }
 
   // Save downloaded .flash zip, unzip it, parse metadata, write SQLite index
