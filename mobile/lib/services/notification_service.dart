@@ -68,6 +68,21 @@ class NotificationService {
     await androidPlugin?.requestExactAlarmsPermission();
   }
 
+  // Helper to check if all cards under a tag have been viewed
+  Future<bool> _isTagFullyViewed(String tag, List<Flashcard> cards) async {
+    final prefs = await SharedPreferences.getInstance();
+    final countsRaw = prefs.getString('card_view_counts');
+    if (countsRaw == null) return false;
+    try {
+      final Map<String, dynamic> counts = jsonDecode(countsRaw);
+      final tagCards = cards.where((c) => c.tags.contains(tag)).toList();
+      if (tagCards.isEmpty) return true;
+      return tagCards.every((c) => (counts[c.id] ?? 0) > 0);
+    } catch (_) {
+      return false;
+    }
+  }
+
   // Read background alert schedule history and synchronize the checklist progression
   Future<void> updateNotificationProgress() async {
     final prefs = await SharedPreferences.getInstance();
@@ -101,35 +116,16 @@ class NotificationService {
         final List<dynamic> oldSlots = jsonDecode(slotsRaw);
         final now = DateTime.now();
         List<dynamic> remainingSlots = [];
-        bool changed = false;
 
         for (final slot in oldSlots) {
           final timeStr = slot['time'] as String;
           final time = DateTime.parse(timeStr);
-          if (time.isBefore(now)) {
-            final tag = slot['tag'] as String;
-            final isLast = slot['is_last_for_tag'] as bool? ?? false;
-            if (isLast) {
-              if (!completedTags.contains(tag)) {
-                completedTags.add(tag);
-                changed = true;
-              }
-            }
-          } else {
+          if (!time.isBefore(now)) {
             remainingSlots.add(slot);
           }
         }
 
-        // Reset round if all tags are marked completed
-        if (completedTags.length >= shuffledTags.length && shuffledTags.isNotEmpty) {
-          completedTags = [];
-          shuffledTags.shuffle();
-          changed = true;
-        }
-
-        if (changed || remainingSlots.length != oldSlots.length) {
-          await prefs.setStringList('shuffled_hashtags', shuffledTags);
-          await prefs.setStringList('completed_hashtags', completedTags);
+        if (remainingSlots.length != oldSlots.length) {
           await prefs.setString('scheduled_slots', jsonEncode(remainingSlots));
         }
       } catch (e) {
@@ -186,6 +182,30 @@ class NotificationService {
       return;
     }
 
+    // Auto-complete tags that are fully viewed in library
+    bool completedChanged = false;
+    for (final tag in shuffledTags) {
+      if (!completedTags.contains(tag)) {
+        final isViewed = await _isTagFullyViewed(tag, cards);
+        if (isViewed) {
+          completedTags.add(tag);
+          completedChanged = true;
+        }
+      }
+    }
+
+    // Reset round if all tags are marked completed (either manually checked or fully viewed)
+    if (completedTags.length >= shuffledTags.length && shuffledTags.isNotEmpty) {
+      completedTags = [];
+      shuffledTags.shuffle();
+      completedChanged = true;
+    }
+
+    if (completedChanged) {
+      await prefs.setStringList('shuffled_hashtags', shuffledTags);
+      await prefs.setStringList('completed_hashtags', completedTags);
+    }
+
     // 4. Calculate total slots for 7 days
     int slotsCount = (7 * 24 / frequencyHours).floor();
     if (slotsCount > 48) slotsCount = 48; // Android safety cap
@@ -206,56 +226,59 @@ class NotificationService {
     );
     final notificationDetails = NotificationDetails(android: androidDetails, iOS: iosDetails);
 
-    // 5. Generate rotational schedule sequence
+    // 5. Generate rotational schedule sequence for the active tag group
     List<Map<String, dynamic>> scheduledSlotsData = [];
-    List<String> localCompleted = List<String>.from(completedTags);
-    List<String> localShuffled = List<String>.from(shuffledTags);
-    
-    // Map of tag -> list of cards left to schedule in this round
-    Map<String, List<Flashcard>> tagCardQueues = {};
     int slotIndex = 1;
 
-    print("Scheduling next $slotsCount reminders, every $frequencyHours hours...");
-
-    while (slotIndex <= slotsCount) {
-      // Check if current round is fully complete
-      if (localCompleted.length >= localShuffled.length && localShuffled.isNotEmpty) {
-        localCompleted.clear();
-        localShuffled.shuffle();
-      }
-
-      // Find the next incomplete tag
-      String? activeTag;
-      for (final tag in localShuffled) {
-        if (!localCompleted.contains(tag)) {
-          activeTag = tag;
-          break;
-        }
-      }
-
-      if (activeTag == null) {
+    // Find the active tag (first incomplete tag)
+    String? activeTag;
+    for (final tag in shuffledTags) {
+      if (!completedTags.contains(tag)) {
+        activeTag = tag;
         break;
       }
+    }
 
-      // Fill card queue for activeTag if empty
-      if (!tagCardQueues.containsKey(activeTag) || tagCardQueues[activeTag]!.isEmpty) {
-        final tagCards = cards.where((c) => c.tags.contains(activeTag)).toList();
-        tagCards.shuffle();
-        tagCardQueues[activeTag] = tagCards;
-      }
+    if (activeTag == null) {
+      print("All tags completed, could not resolve active tag.");
+      return;
+    }
 
-      final queue = tagCardQueues[activeTag]!;
-      if (queue.isEmpty) {
-        // Tag has no cards, mark completed and proceed
-        localCompleted.add(activeTag);
-        continue;
-      }
+    // Load view counts for prioritizing unviewed cards
+    final countsRaw = prefs.getString('card_view_counts');
+    Map<String, int> counts = {};
+    if (countsRaw != null) {
+      try {
+        final Map<String, dynamic> decoded = jsonDecode(countsRaw);
+        decoded.forEach((key, val) {
+          if (val is int) {
+            counts[key] = val;
+          }
+        });
+      } catch (_) {}
+    }
 
-      final card = queue.removeLast();
+    // Get cards under activeTag and sort: unviewed cards first
+    final tagCards = cards.where((c) => c.tags.contains(activeTag)).toList();
+    tagCards.sort((a, b) {
+      final viewA = counts[a.id] ?? 0;
+      final viewB = counts[b.id] ?? 0;
+      return viewA.compareTo(viewB);
+    });
+
+    if (tagCards.isEmpty) {
+      print("No cards found for active tag: $activeTag");
+      return;
+    }
+
+    print("Scheduling next $slotsCount reminders, every $frequencyHours hours... (Active Tag: $activeTag)");
+
+    int cardIndex = 0;
+    while (slotIndex <= slotsCount) {
+      final card = tagCards[cardIndex % tagCards.length];
+      cardIndex++;
+
       final scheduledTime = tz.TZDateTime.now(tz.local).add(Duration(hours: frequencyHours * slotIndex));
-
-      // Is this the last card in queue for this tag?
-      final bool isLast = queue.isEmpty;
 
       // Schedule local notification
       await _notificationsPlugin.zonedSchedule(
@@ -268,7 +291,7 @@ class NotificationService {
         payload: card.id,
       );
 
-      // Log notification history
+      // Log notification history (now standardizes automatically to UTC inside logNotification)
       await StorageService().logNotification(
         card.id,
         'MindLoop Review - #$activeTag',
@@ -279,21 +302,15 @@ class NotificationService {
       scheduledSlotsData.add({
         'time': scheduledTime.toIso8601String(),
         'tag': activeTag,
-        'is_last_for_tag': isLast,
+        'is_last_for_tag': false,
       });
-
-      if (isLast) {
-        localCompleted.add(activeTag);
-      }
 
       print("Scheduled reminder #$slotIndex at $scheduledTime (Tag: $activeTag | Card: ${card.id})");
       slotIndex++;
     }
 
-    // Save scheduled slots and updated states
+    // Save scheduled slots
     await prefs.setString('scheduled_slots', jsonEncode(scheduledSlotsData));
-    await prefs.setStringList('shuffled_hashtags', shuffledTags);
-    await prefs.setStringList('completed_hashtags', completedTags);
   }
 
   // Helper to schedule a test notification after 5 seconds

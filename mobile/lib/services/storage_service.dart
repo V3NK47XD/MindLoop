@@ -242,7 +242,7 @@ class StorageService {
         'card_id': cardId,
         'title': title,
         'body': body,
-        'scheduled_time': scheduledTime.toIso8601String(),
+        'scheduled_time': scheduledTime.toUtc().toIso8601String(),
       },
     );
   }
@@ -250,7 +250,7 @@ class StorageService {
   // Get notification history (where scheduled_time <= now)
   Future<List<Map<String, dynamic>>> getNotificationHistory() async {
     final db = await database;
-    final nowStr = DateTime.now().toIso8601String();
+    final nowStr = DateTime.now().toUtc().toIso8601String();
     return await db.query(
       'notifications_history',
       where: 'scheduled_time <= ?',
@@ -268,7 +268,7 @@ class StorageService {
   // Clear future notifications from history
   Future<void> clearFutureNotifications() async {
     final db = await database;
-    final nowStr = DateTime.now().toIso8601String();
+    final nowStr = DateTime.now().toUtc().toIso8601String();
     await db.delete(
       'notifications_history',
       where: 'scheduled_time > ?',

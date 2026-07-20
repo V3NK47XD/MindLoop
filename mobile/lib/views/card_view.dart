@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:mobile/models/flashcard.dart';
 import 'package:mobile/services/storage_service.dart';
+import 'package:mobile/services/notification_service.dart';
 import 'package:mobile/widgets/paper_background.dart';
 
 class CardView extends StatefulWidget {
@@ -76,6 +77,10 @@ class _CardViewState extends State<CardView> {
       counts[widget.card.id] = currentCount + 1;
 
       await prefs.setString('card_view_counts', jsonEncode(counts));
+
+      // Trigger notification rescheduling immediately
+      final frequencyHours = prefs.getInt('notification_frequency') ?? 3;
+      await NotificationService().rescheduleReminders(frequencyHours);
     } catch (e) {
       print("Error saving view count: $e");
     }

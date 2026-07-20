@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:mobile/models/flashcard.dart';
 import 'package:mobile/services/notification_service.dart';
 import 'package:mobile/services/storage_service.dart';
 import 'package:mobile/widgets/paper_background.dart';
@@ -17,6 +19,7 @@ class _NotificationsViewState extends State<NotificationsView> {
   int _frequencyHours = 3; // Default every 3 hours
   List<String> _shuffledTags = [];
   List<String> _completedTags = [];
+  List<String> _fullyViewedTags = [];
   bool _isLoading = true;
   String _themeModeStr = 'light';
 
@@ -32,11 +35,39 @@ class _NotificationsViewState extends State<NotificationsView> {
 
     // 2. Load settings from SharedPreferences
     final prefs = await SharedPreferences.getInstance();
+    final cards = await StorageService().getAllCards();
+    final countsRaw = prefs.getString('card_view_counts');
+    Map<String, int> counts = {};
+    if (countsRaw != null) {
+      try {
+        final Map<String, dynamic> decoded = jsonDecode(countsRaw);
+        decoded.forEach((key, value) {
+          if (value is int) {
+            counts[key] = value;
+          }
+        });
+      } catch (_) {}
+    }
+
+    final Set<String> fullyViewedTags = {};
+    final Map<String, List<Flashcard>> cardsByTag = {};
+    for (final card in cards) {
+      for (final tag in card.tags) {
+        cardsByTag.putIfAbsent(tag, () => []).add(card);
+      }
+    }
+    cardsByTag.forEach((tag, tagCards) {
+      if (tagCards.isNotEmpty && tagCards.every((c) => (counts[c.id] ?? 0) > 0)) {
+        fullyViewedTags.add(tag);
+      }
+    });
+
     if (mounted) {
       setState(() {
         _frequencyHours = prefs.getInt('notification_frequency') ?? 3;
         _shuffledTags = prefs.getStringList('shuffled_hashtags') ?? [];
         _completedTags = prefs.getStringList('completed_hashtags') ?? [];
+        _fullyViewedTags = fullyViewedTags.toList();
         _themeModeStr = prefs.getString('theme_mode') ?? 'light';
         _isLoading = false;
       });
@@ -266,7 +297,7 @@ class _NotificationsViewState extends State<NotificationsView> {
                                     ],
                                   ),
                                   Text(
-                                    '${_completedTags.length}/${_shuffledTags.length} DONE',
+                                    '${_shuffledTags.where((t) => _completedTags.contains(t) || _fullyViewedTags.contains(t)).length}/${_shuffledTags.length} DONE',
                                     style: TextStyle(color: textColor, fontSize: 12, fontWeight: FontWeight.w900),
                                   ),
                                 ],
@@ -275,7 +306,9 @@ class _NotificationsViewState extends State<NotificationsView> {
                               ClipRRect(
                                 borderRadius: BorderRadius.circular(4),
                                 child: LinearProgressIndicator(
-                                  value: _shuffledTags.isEmpty ? 0 : _completedTags.length / _shuffledTags.length,
+                                  value: _shuffledTags.isEmpty 
+                                      ? 0 
+                                      : _shuffledTags.where((t) => _completedTags.contains(t) || _fullyViewedTags.contains(t)).length / _shuffledTags.length,
                                   backgroundColor: isDark ? Colors.white12 : Colors.black12,
                                   valueColor: const AlwaysStoppedAnimation<Color>(Colors.green),
                                   minHeight: 8,
@@ -286,7 +319,7 @@ class _NotificationsViewState extends State<NotificationsView> {
                                 spacing: 8,
                                 runSpacing: 8,
                                 children: _shuffledTags.map((tag) {
-                                  final isCompleted = _completedTags.contains(tag);
+                                  final isCompleted = _completedTags.contains(tag) || _fullyViewedTags.contains(tag);
                                   return InkWell(
                                     onTap: () => _toggleTagCompletion(tag, !isCompleted),
                                     borderRadius: BorderRadius.circular(4),
