@@ -22,58 +22,74 @@ class _MainNavigationViewState extends State<MainNavigationView> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final panelBg = isDark ? const Color(0xFF111827) : Colors.white;
-    final borderColor = isDark ? Colors.white : Colors.black;
+    final panelBg = isDark ? const Color(0xFF1E293B) : Colors.white;
+    final borderColor = isDark ? const Color(0xFF38BDF8) : Colors.black;
+    final shadowColor = isDark ? Colors.black45 : Colors.black;
 
     return Scaffold(
       body: IndexedStack(
         index: _currentIndex,
         children: _pages,
       ),
-      bottomNavigationBar: Container(
-        decoration: BoxDecoration(
-          color: panelBg,
-          border: Border(
-            top: BorderSide(color: borderColor, width: 3.0),
+      bottomNavigationBar: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.only(left: 16.0, right: 16.0, bottom: 16.0, top: 4.0),
+          child: Container(
+            decoration: BoxDecoration(
+              color: panelBg,
+              borderRadius: BorderRadius.circular(20.0),
+              border: Border.all(color: borderColor, width: 3.0),
+              boxShadow: [
+                BoxShadow(
+                  color: shadowColor,
+                  offset: const Offset(4, 4),
+                  blurRadius: 0,
+                ),
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(16.0),
+              child: BottomNavigationBar(
+                currentIndex: _currentIndex,
+                onTap: (index) {
+                  setState(() {
+                    _currentIndex = index;
+                  });
+                },
+                backgroundColor: Colors.transparent,
+                selectedItemColor: isDark ? const Color(0xFF38BDF8) : const Color(0xFF06B6D4),
+                unselectedItemColor: isDark ? Colors.grey[400] : Colors.grey[600],
+                selectedLabelStyle: const TextStyle(fontWeight: FontWeight.w900, fontSize: 11, letterSpacing: 0.5),
+                unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w800, fontSize: 10, letterSpacing: 0.5),
+                type: BottomNavigationBarType.fixed,
+                elevation: 0,
+                items: const [
+                  BottomNavigationBarItem(
+                    icon: Padding(
+                      padding: EdgeInsets.only(bottom: 4.0),
+                      child: Icon(Icons.history_toggle_off_rounded),
+                    ),
+                    label: 'HISTORY',
+                  ),
+                  BottomNavigationBarItem(
+                    icon: Padding(
+                      padding: EdgeInsets.only(bottom: 4.0),
+                      child: Icon(Icons.swap_horizontal_circle_outlined),
+                    ),
+                    label: 'SYNC & LIBRARY',
+                  ),
+                  BottomNavigationBarItem(
+                    icon: Padding(
+                      padding: EdgeInsets.only(bottom: 4.0),
+                      child: Icon(Icons.settings_outlined),
+                    ),
+                    label: 'SETTINGS',
+                  ),
+                ],
+              ),
+            ),
           ),
-        ),
-        child: BottomNavigationBar(
-          currentIndex: _currentIndex,
-          onTap: (index) {
-            setState(() {
-              _currentIndex = index;
-            });
-          },
-          backgroundColor: panelBg,
-          selectedItemColor: isDark ? Colors.cyan : const Color(0xFF06B6D4),
-          unselectedItemColor: isDark ? Colors.grey[500] : Colors.grey[600],
-          selectedLabelStyle: const TextStyle(fontWeight: FontWeight.w900, fontSize: 11, letterSpacing: 0.5),
-          unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w800, fontSize: 10, letterSpacing: 0.5),
-          type: BottomNavigationBarType.fixed,
-          elevation: 0,
-          items: const [
-            BottomNavigationBarItem(
-              icon: Padding(
-                padding: EdgeInsets.only(bottom: 4.0),
-                child: Icon(Icons.history_toggle_off_rounded),
-              ),
-              label: 'HISTORY',
-            ),
-            BottomNavigationBarItem(
-              icon: Padding(
-                padding: EdgeInsets.only(bottom: 4.0),
-                child: Icon(Icons.swap_horizontal_circle_outlined),
-              ),
-              label: 'SYNC & LIBRARY',
-            ),
-            BottomNavigationBarItem(
-              icon: Padding(
-                padding: EdgeInsets.only(bottom: 4.0),
-                child: Icon(Icons.settings_outlined),
-              ),
-              label: 'SETTINGS',
-            ),
-          ],
         ),
       ),
     );
