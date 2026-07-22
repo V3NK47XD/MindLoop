@@ -565,8 +565,15 @@ if frontend_dist.exists():
         raise HTTPException(status_code=404, detail="Frontend index.html not found")
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
     import uvicorn
-    try:
-        uvicorn.run("app.main:app", host="0.0.0.0", port=6769, reload=True)
-    except Exception:
+    
+    is_frozen = getattr(sys, 'frozen', False)
+    if is_frozen:
         uvicorn.run(app, host="0.0.0.0", port=6769)
+    else:
+        try:
+            uvicorn.run("app.main:app", host="0.0.0.0", port=6769, reload=False)
+        except Exception:
+            uvicorn.run(app, host="0.0.0.0", port=6769)
