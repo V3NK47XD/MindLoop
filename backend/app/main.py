@@ -333,10 +333,15 @@ def update_card(
                 for asset_file in extracted_assets_dir.glob("*"):
                     new_zip.write(asset_file, arcname=f"assets/{asset_file.name}")
                     
-        # If hash changed, delete the old file
+        # If hash changed, delete the old file & queue old_hash for pruning on connected phones
         if new_card_hash != card_hash:
             os.remove(old_flash_path)
             logger.info(f"Content changed. Deleted old card {card_hash} and created new card {new_card_hash}")
+            for dev_id in list(sync.device_libraries.keys()):
+                if dev_id not in sync.device_sync_prunes:
+                    sync.device_sync_prunes[dev_id] = []
+                if card_hash not in sync.device_sync_prunes[dev_id]:
+                    sync.device_sync_prunes[dev_id].append(card_hash)
         else:
             logger.info(f"Overwrote card {card_hash}")
             
@@ -347,6 +352,8 @@ def update_card(
         # Auto-queue new/updated card hash to all active device sync queues
         from app.routers.pairing import notify_listeners
         for dev_id in list(sync.device_sync_queues.keys()):
+            if dev_id not in sync.device_sync_queues:
+                sync.device_sync_queues[dev_id] = []
             if new_card_hash not in sync.device_sync_queues[dev_id]:
                 sync.device_sync_queues[dev_id].append(new_card_hash)
         notify_listeners()

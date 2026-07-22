@@ -306,17 +306,24 @@ class SyncService extends ChangeNotifier {
     print("Starting sync cycle with PC http://$_serverIp:$_serverPort");
 
     try {
-      // Step A: Upload mobile library hashes and rich metadata
+      // Step A: Upload mobile library hashes and rich metadata (including full answer content)
       final localCards = await _storageService.getAllCards();
       final localHashes = localCards.map((c) => c.id).toList();
-      final cardsMetadata = localCards.map((c) => {
-        "id": c.id,
-        "question": c.question,
-        "created_at": c.createdAt,
-        "tags": c.tags,
-        "source_pdf": c.sourcePdf,
-        "pdf_page": c.pdfRefLine
-      }).toList();
+      
+      final List<Map<String, dynamic>> cardsMetadata = [];
+      for (final c in localCards) {
+        final answerContent = await _storageService.getCardMarkdownContent(c);
+        cardsMetadata.add({
+          "id": c.id,
+          "question": c.question,
+          "answer": answerContent,
+          "created_at": c.createdAt,
+          "tags": c.tags,
+          "source_pdf": c.sourcePdf,
+          "pdf_page": c.pdfRefLine,
+          "attachments": c.attachments
+        });
+      }
 
       final libUri = Uri.parse("http://$_serverIp:$_serverPort/api/sync/device/$_deviceId/library");
       await http.post(
@@ -328,13 +335,21 @@ class SyncService extends ChangeNotifier {
         }),
       );
 
-      // Step B: Get pending sync transfers
+      // Step B: Get pending sync transfers & prune queues
       final pendingUri = Uri.parse("http://$_serverIp:$_serverPort/api/sync/device/$_deviceId/pending");
       final pendingResp = await http.get(pendingUri);
       
       if (pendingResp.statusCode == 200) {
         final Map<String, dynamic> data = jsonDecode(pendingResp.body);
         final List<dynamic> pendingHashes = data['pending_hashes'] ?? [];
+        final List<dynamic> pruneHashes = data['prune_hashes'] ?? [];
+
+        // Prune obsolete/edited cards from phone storage
+        for (String oldHash in pruneHashes.cast<String>()) {
+          await _storageService.deleteCard(oldHash);
+          print("Pruned obsolete card $oldHash on mobile device.");
+        }
+
         lastSyncedCount = pendingHashes.length;
         print("Sync queue has ${pendingHashes.length} cards to download.");
 

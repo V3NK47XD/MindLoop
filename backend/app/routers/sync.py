@@ -13,18 +13,21 @@ router = APIRouter(prefix="/api/sync", tags=["sync"])
 
 from typing import Dict, List, Set, Optional
 
-# In-memory storage for device library states, sync queues, and metadata cache
+# In-memory storage for device library states, sync queues, prune queues, and metadata cache
 device_libraries: Dict[str, Set[str]] = {}
 device_sync_queues: Dict[str, List[str]] = {}
+device_sync_prunes: Dict[str, List[str]] = {}
 device_metadata_cache: Dict[str, Dict[str, dict]] = {}
 
 class CardMetadataItem(BaseModel):
     id: str
     question: str
+    answer: Optional[str] = ""
     created_at: Optional[str] = None
     tags: Optional[List[str]] = None
     source_pdf: Optional[str] = None
     pdf_page: Optional[int] = 0
+    attachments: Optional[List[str]] = None
 
 class LibraryStateRequest(BaseModel):
     card_hashes: Optional[List[str]] = None
@@ -173,9 +176,10 @@ def queue_cards_for_sync(device_id: str, req: QueueSyncRequest):
 
 @router.get("/device/{device_id}/pending")
 def get_pending_syncs(device_id: str):
-    """The mobile phone polls this (or receives WS trigger) to get its transfer queue."""
+    """The mobile phone polls this to get its transfer queue and prune queue."""
     pending = device_sync_queues.get(device_id, [])
-    return {"pending_hashes": pending}
+    prune = device_sync_prunes.get(device_id, [])
+    return {"pending_hashes": pending, "prune_hashes": prune}
 
 @router.get("/card/{card_hash}/download")
 def download_card_file(card_hash: str):
