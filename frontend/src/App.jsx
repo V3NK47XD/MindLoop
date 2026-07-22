@@ -680,6 +680,21 @@ function App() {
     }
   };
 
+  const handleDeletePhoneCard = async (cardId) => {
+    if (!activeDevice) return;
+    if (!confirm("Are you sure you want to delete this flashcard from the connected mobile device?")) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/sync/device/${activeDevice.device_id}/card/${cardId}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        fetchComparison();
+      }
+    } catch (err) {
+      console.error("Failed to delete card from phone:", err);
+    }
+  };
+
   const handleEnterEditWorkspace = async (card) => {
     setIsLoadingContent(true);
     setWsError('');
@@ -947,7 +962,14 @@ function App() {
                         ))}
                       </div>
                     </div>
-                    <CheckCircle2 color="var(--success)" size={20} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: '16px' }} onClick={e => e.stopPropagation()}>
+                      <button className="btn btn-secondary" style={{ padding: '6px 12px', fontSize: '0.8rem' }} onClick={() => handleEnterEditWorkspace(card)}>
+                        Edit
+                      </button>
+                      <button className="btn btn-danger" style={{ padding: '6px 12px', fontSize: '0.8rem', background: 'var(--red)', color: '#fff' }} onClick={() => handleDeletePhoneCard(card.id)}>
+                        Delete
+                      </button>
+                    </div>
                   </div>
                 ))
               )}
@@ -1679,7 +1701,7 @@ function App() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', borderLeft: '1px solid var(--panel-border)', paddingLeft: '16px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '0 4px' }}>
                 <h3 style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
-                  Phone Storage {activeDevice ? `(${visiblePhoneCards.length})` : ''}
+                  Phone Storage {activeDevice ? `(${filteredPhoneCards.length})` : ''}
                 </h3>
                 {activeDevice && (
                   <button className="btn" style={{ padding: '2px 8px', fontSize: '0.75rem', border: '1.5px solid var(--border-color)', boxShadow: '1.5px 1.5px 0px var(--shadow-color)', textTransform: 'uppercase' }} onClick={() => setCurrentView('phone-manage')}>
@@ -1688,12 +1710,34 @@ function App() {
                 )}
               </div>
               
+              {activeDevice && (
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '4px' }}>
+                  <input 
+                    type="text" 
+                    placeholder="Search phone cards..." 
+                    value={phoneSearchQuery}
+                    onChange={(e) => setPhoneSearchQuery(e.target.value)}
+                    style={{ flex: 1 }}
+                  />
+                  <select
+                    value={phoneFilterTag}
+                    onChange={(e) => setPhoneFilterTag(e.target.value)}
+                    style={{ maxWidth: '140px' }}
+                  >
+                    <option value="All">All Tags</option>
+                    {phoneTags.map((tag, idx) => (
+                      <option key={idx} value={tag}>{tag}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               {activeDevice ? (
-                <div className="cards-list" style={{ height: '528px', overflowY: 'auto' }}>
-                  {visiblePhoneCards.length === 0 ? (
-                    <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>No cards synced to phone.</div>
+                <div className="cards-list" style={{ height: '480px', overflowY: 'auto' }}>
+                  {filteredPhoneCards.length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>No cards found.</div>
                   ) : (
-                    visiblePhoneCards.map(card => (
+                    filteredPhoneCards.map(card => (
                       <div 
                         key={card.id} 
                         className="flashcard-row" 
@@ -1704,7 +1748,17 @@ function App() {
                           <span className="card-question" title={card.question}>{card.question}</span>
                           <span className="tag-badge">Synced</span>
                         </div>
-                        <CheckCircle2 color="var(--success)" size={18} />
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }} onClick={e => e.stopPropagation()}>
+                          <CheckCircle2 color="var(--success)" size={18} />
+                          <button 
+                            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+                            onClick={() => handleDeletePhoneCard(card.id)}
+                            className="hover-danger"
+                            title="Delete card from phone"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
                       </div>
                     ))
                   )}

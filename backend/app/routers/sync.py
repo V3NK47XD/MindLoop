@@ -262,3 +262,25 @@ async def upload_flash_file(device_id: str, file: UploadFile = File(...)):
     except Exception as e:
         logger.error(f"Failed to upload flashcard from phone: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/device/{device_id}/card/{card_id}")
+def delete_device_card(device_id: str, card_id: str):
+    """Queues a card for deletion/pruning on the specified mobile device."""
+    try:
+        if device_id not in device_sync_prunes:
+            device_sync_prunes[device_id] = []
+        if card_id not in device_sync_prunes[device_id]:
+            device_sync_prunes[device_id].append(card_id)
+            
+        if device_id in device_libraries and card_id in device_libraries[device_id]:
+            device_libraries[device_id].remove(card_id)
+        if device_id in device_metadata_cache and card_id in device_metadata_cache[device_id]:
+            del device_metadata_cache[device_id][card_id]
+            
+        from app.routers.pairing import notify_listeners
+        notify_listeners()
+        logger.info(f"Queued card {card_id} for deletion on device {device_id}")
+        return {"status": "success", "deleted_card_id": card_id}
+    except Exception as e:
+        logger.error(f"Failed to delete card from device {device_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
