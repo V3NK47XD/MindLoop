@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import MarkdownEditor from './components/MarkdownEditor';
 import { 
   FileUp, 
   Smartphone, 
@@ -897,12 +898,28 @@ function App() {
               </div>
 
               <div>
-                <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px' }}>Detailed Content (Answer / Back Side - Markdown & LaTeX support)</label>
-                <textarea 
+                <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px' }}>
+                  Detailed Content (Notion / AppFlowy Rich Workspace Editor)
+                </label>
+                <MarkdownEditor 
                   value={wsAnswer} 
-                  onChange={(e) => setWsAnswer(e.target.value)} 
-                  placeholder="Supports bold **text**, lists, images, and math equations like $E=mc^2$ or block math $$f(x)=\\int_{-\\infty}^\\infty \\hat{f}(\\xi)e^{2\\pi i \\xi x}d\\xi$$"
-                  style={{ width: '100%', minHeight: '220px', fontFamily: 'monospace' }}
+                  onChange={setWsAnswer} 
+                  getAttachmentUrl={(src) => {
+                    if (!src) return '';
+                    if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('data:')) {
+                      return src;
+                    }
+                    const filename = src.replace(/^assets\//, '');
+                    const localFile = wsImages.find(f => f.name === filename);
+                    if (localFile) {
+                      return URL.createObjectURL(localFile);
+                    }
+                    if (selectedWorkspaceCard) {
+                      return `${API_BASE}/api/cards/${selectedWorkspaceCard.id}/assets/${filename}`;
+                    }
+                    return src;
+                  }}
+                  placeholder="Type your markdown content here... Press '/' for block commands or use the toolbar above!"
                 />
               </div>
 
