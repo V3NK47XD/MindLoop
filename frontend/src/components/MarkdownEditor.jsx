@@ -3,7 +3,7 @@ import {
   Bold, Italic, Strikethrough, Underline, Code, 
   Heading1, Heading2, Heading3, List, ListOrdered, CheckSquare, 
   Quote, AlertCircle, Table, Link as LinkIcon, Minus, 
-  Eye, Columns, Edit3, Copy, Check, FileText, Sparkles, Image as ImageIcon
+  Eye, Columns, Edit3, Copy, Check, FileText, Sparkles, Image as ImageIcon, Sigma
 } from 'lucide-react';
 
 // KaTeX helper for rendering math equations
