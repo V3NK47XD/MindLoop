@@ -138,27 +138,19 @@ class SyncService extends ChangeNotifier {
     super.dispose();
   }
 
-  // 1. Discovery & Pairing Flow
+  // 1. Discovery & Pairing Flow (UDP Broadcast disabled; direct QR IP sweep)
   Future<bool> pairWithQR(String qrRawPayload) async {
     try {
       final Map<String, dynamic> data = jsonDecode(qrRawPayload);
-      final String pairingCode = data['pairing_code'];
-      final int port = data['port'];
-      final List<dynamic> ips = data['ips'];
+      final String pairingCode = data['pairing_code'] ?? '';
+      final int port = data['port'] ?? 6769;
+      final List<dynamic> ips = data['ips'] ?? [];
 
-      // Step A: Attempt UDP Broadcast discovery
-      String? foundIp = await _discoverServerViaUdp(pairingCode, port);
-      bool paired = false;
-      
-      if (foundIp != null) {
-        paired = await _runPairingHandshake(foundIp, port, pairingCode);
-      }
-      
-      // Step B: If UDP fails or handshake fails, fall back to sweeping TCP IP list
-      if (!paired) {
-        foundIp = await _sweepIpsForPairing(ips.cast<String>(), port, pairingCode);
-        paired = (foundIp != null);
-      }
+      print("Pairing via QR payload... Sweeping IP targets: $ips on port $port");
+
+      // UDP broadcast disabled: Directly sweep all target IPs provided in QR code payload
+      String? foundIp = await _sweepIpsForPairing(ips.cast<String>(), port, pairingCode);
+      bool paired = (foundIp != null);
 
       if (paired && foundIp != null) {
         await _saveConnection(foundIp, port);
@@ -172,7 +164,8 @@ class SyncService extends ChangeNotifier {
     return false;
   }
 
-  // Send UDP Broadcast to discover the PC
+  /*
+  // Disabled UDP Broadcast discovery
   Future<String?> _discoverServerViaUdp(String pairingCode, int port) async {
     try {
       final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
@@ -184,13 +177,11 @@ class SyncService extends ChangeNotifier {
       };
       final List<int> payload = utf8.encode(jsonEncode(discoverMsg));
       
-      // Broadcast to 255.255.255.255 on specified port
       socket.send(payload, InternetAddress("255.255.255.255"), port);
       print("Sent UDP discovery broadcast to port $port");
 
       final Completer<String?> completer = Completer();
       
-      // Setup a timeout for listening
       Timer(const Duration(seconds: 2), () {
         if (!completer.isCompleted) {
           socket.close();
@@ -210,9 +201,7 @@ class SyncService extends ChangeNotifier {
                 socket.close();
                 completer.complete(pcIp);
               }
-            } catch (e) {
-              // Ignore parse errors from foreign packets
-            }
+            } catch (e) {}
           }
         }
       });
@@ -223,6 +212,7 @@ class SyncService extends ChangeNotifier {
       return null;
     }
   }
+  */
 
   // Run the HTTP pairing handshake to register with the PC
   Future<bool> _runPairingHandshake(String ip, int port, String pairingCode) async {
@@ -316,15 +306,26 @@ class SyncService extends ChangeNotifier {
     print("Starting sync cycle with PC http://$_serverIp:$_serverPort");
 
     try {
-      // Step A: Upload mobile library hashes
+      // Step A: Upload mobile library hashes and rich metadata
       final localCards = await _storageService.getAllCards();
       final localHashes = localCards.map((c) => c.id).toList();
+      final cardsMetadata = localCards.map((c) => {
+        "id": c.id,
+        "question": c.question,
+        "created_at": c.createdAt,
+        "tags": c.tags,
+        "source_pdf": c.sourcePdf,
+        "pdf_page": c.pdfRefLine
+      }).toList();
 
       final libUri = Uri.parse("http://$_serverIp:$_serverPort/api/sync/device/$_deviceId/library");
       await http.post(
         libUri,
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({"card_hashes": localHashes}),
+        body: jsonEncode({
+          "card_hashes": localHashes,
+          "cards_metadata": cardsMetadata
+        }),
       );
 
       // Step B: Get pending sync transfers

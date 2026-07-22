@@ -11,15 +11,24 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
-# In-memory storage for device library states and sync queues
-# device_libraries: { device_id: set(card_hashes) }
-device_libraries: Dict[str, Set[str]] = {}
+from typing import Dict, List, Set, Optional
 
-# device_sync_queues: { device_id: list(card_hashes_to_sync) }
+# In-memory storage for device library states, sync queues, and metadata cache
+device_libraries: Dict[str, Set[str]] = {}
 device_sync_queues: Dict[str, List[str]] = {}
+device_metadata_cache: Dict[str, Dict[str, dict]] = {}
+
+class CardMetadataItem(BaseModel):
+    id: str
+    question: str
+    created_at: Optional[str] = None
+    tags: Optional[List[str]] = None
+    source_pdf: Optional[str] = None
+    pdf_page: Optional[int] = 0
 
 class LibraryStateRequest(BaseModel):
-    card_hashes: List[str]
+    card_hashes: Optional[List[str]] = None
+    cards_metadata: Optional[List[CardMetadataItem]] = None
 
 class QueueSyncRequest(BaseModel):
     card_hashes: List[str]
@@ -46,9 +55,25 @@ def get_pc_library() -> List[dict]:
 
 @router.post("/device/{device_id}/library")
 def update_device_library(device_id: str, req: LibraryStateRequest):
-    """The mobile phone calls this to upload its current list of card hashes."""
-    device_libraries[device_id] = set(req.card_hashes)
-    logger.info(f"Updated library state for device {device_id} with {len(req.card_hashes)} cards.")
+    """The mobile phone calls this to upload its current list of card hashes and metadata."""
+    hashes = set()
+    metadata_map = {}
+    
+    if req.cards_metadata:
+        for item in req.cards_metadata:
+            hashes.add(item.id)
+            metadata_map[item.id] = item.dict()
+    if req.card_hashes:
+        for h in req.card_hashes:
+            hashes.add(h)
+
+    device_libraries[device_id] = hashes
+    if metadata_map:
+        if device_id not in device_metadata_cache:
+            device_metadata_cache[device_id] = {}
+        device_metadata_cache[device_id].update(metadata_map)
+    
+    logger.info(f"Updated library state for device {device_id} with {len(hashes)} cards.")
     
     # Initialize queue for this device if not exists
     if device_id not in device_sync_queues:
@@ -57,7 +82,7 @@ def update_device_library(device_id: str, req: LibraryStateRequest):
     from app.routers.pairing import notify_listeners
     notify_listeners()
         
-    return {"status": "success", "count": len(req.card_hashes)}
+    return {"status": "success", "count": len(hashes)}
 
 @router.get("/device/{device_id}/compare")
 def compare_libraries(device_id: str):
@@ -67,6 +92,7 @@ def compare_libraries(device_id: str):
     """
     pc_cards = get_pc_library()
     phone_hashes = device_libraries.get(device_id, set())
+    phone_meta = device_metadata_cache.get(device_id, {})
     
     # Enrich PC cards with sync status
     enriched_pc_cards = []
@@ -79,12 +105,12 @@ def compare_libraries(device_id: str):
             "sync_status": "synced" if is_synced else "only_pc"
         })
         
-    # Also compile cards that are ONLY on the phone (if any exist, e.g. local edits/creation)
+    # Also compile cards that are on the phone
     pc_hashes = {card["id"] for card in pc_cards}
     only_phone_hashes = phone_hashes - pc_hashes
     
     phone_cards = []
-    # For common cards, we already show details on PC side, but list them for the comparison UI
+    # For common cards, use PC metadata
     for card in pc_cards:
         card_hash = card["id"]
         if card_hash in phone_hashes:
@@ -98,14 +124,26 @@ def compare_libraries(device_id: str):
                 "pdf_page": card.get("pdf_page")
             })
             
-    # Add items unique to phone (will lack full PC metadata context in memory, but show placeholder)
+    # For items unique to phone (e.g. edited on phone or removed from PC)
     for p_hash in only_phone_hashes:
-        phone_cards.append({
-            "id": p_hash,
-            "question": "Local card on Phone",
-            "created_at": None,
-            "sync_status": "only_phone"
-        })
+        cached_item = phone_meta.get(p_hash)
+        if cached_item:
+            phone_cards.append({
+                "id": p_hash,
+                "question": cached_item.get("question") or "Local Card on Phone",
+                "created_at": cached_item.get("created_at"),
+                "sync_status": "only_phone",
+                "source_pdf": cached_item.get("source_pdf") or "Mobile Storage",
+                "tags": cached_item.get("tags") or [],
+                "pdf_page": cached_item.get("pdf_page") or 0
+            })
+        else:
+            phone_cards.append({
+                "id": p_hash,
+                "question": "Local card on Phone",
+                "created_at": None,
+                "sync_status": "only_phone"
+            })
         
     return {
         "pc_cards": enriched_pc_cards,
