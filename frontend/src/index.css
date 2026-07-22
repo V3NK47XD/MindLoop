@@ -606,52 +606,64 @@ input:focus, select:focus {
 .preview-markdown-body {
   font-family: 'Outfit', sans-serif;
   color: var(--text-color);
-  line-height: 1.7;
+  font-size: 1.12rem;
+  line-height: 1.8;
   text-align: left;
 }
 
 .preview-empty-hint {
   color: var(--text-muted);
   font-style: italic;
-  font-size: 0.9rem;
+  font-size: 1rem;
 }
 
 .preview-markdown-body h1 {
-  font-size: 1.6rem;
+  font-size: 1.9rem;
   font-weight: 900;
-  border-bottom: 2px solid var(--border-color);
-  padding-bottom: 6px;
-  margin: 14px 0 10px 0;
+  border-bottom: 2.5px solid var(--border-color);
+  padding-bottom: 8px;
+  margin: 18px 0 12px 0;
 }
 
 .preview-markdown-body h2 {
-  font-size: 1.3rem;
+  font-size: 1.55rem;
   font-weight: 800;
-  margin: 12px 0 8px 0;
+  margin: 16px 0 10px 0;
 }
 
 .preview-markdown-body h3 {
-  font-size: 1.1rem;
+  font-size: 1.3rem;
   font-weight: 700;
-  margin: 10px 0 6px 0;
+  margin: 14px 0 8px 0;
+}
+
+.preview-markdown-body h4 {
+  font-size: 1.15rem;
+  font-weight: 700;
+  margin: 12px 0 6px 0;
 }
 
 .preview-markdown-body p {
-  margin-bottom: 10px;
+  font-size: 1.12rem;
+  margin-bottom: 12px;
+  line-height: 1.8;
 }
 
 .preview-markdown-body ul, .preview-markdown-body ol {
-  padding-left: 24px;
-  margin-bottom: 12px;
+  font-size: 1.1rem;
+  line-height: 1.8;
+  padding-left: 28px;
+  margin-bottom: 14px;
 }
 
 .preview-markdown-body blockquote {
   border-left: 4px solid var(--cyan);
-  padding: 8px 14px;
-  margin: 12px 0;
-  background: rgba(6, 182, 212, 0.08);
+  padding: 10px 16px;
+  margin: 14px 0;
+  background: rgba(6, 182, 212, 0.1);
   border-radius: 0 8px 8px 0;
   font-style: italic;
+  font-size: 1.1rem;
 }
 
 .editor-task-item {

@@ -1845,52 +1845,67 @@ function App() {
       {/* Flashcard Detail Modal */}
       {selectedCard && (
         <div className="modal-overlay" onClick={() => setSelectedCard(null)}>
-          <div className="modal-content glass-panel" style={{ width: '90vw', maxWidth: '1300px', height: '88vh', maxHeight: '90vh', padding: '32px', display: 'flex', flexDirection: 'column', textAlign: 'left', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
+          <div className="modal-content glass-panel" style={{ width: '92vw', maxWidth: '1400px', height: '90vh', maxHeight: '90vh', padding: '32px', display: 'flex', flexDirection: 'column', textAlign: 'left', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-              <span className="tag-badge primary" style={{ margin: 0 }}>
+              <span className="tag-badge primary" style={{ margin: 0, fontSize: '0.9rem', padding: '6px 12px' }}>
                 {selectedCard.source_pdf}
               </span>
               <button 
-                style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '1.5rem', lineHeight: 1 }}
+                style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '1.8rem', lineHeight: 1 }}
                 onClick={() => setSelectedCard(null)}
               >
                 &times;
               </button>
             </div>
 
-            <h3 style={{ fontSize: '1.35rem', fontWeight: '800', color: '#fff', marginBottom: '12px', lineHeight: 1.4 }}>
+            <h3 style={{ fontSize: '1.6rem', fontWeight: '800', color: '#fff', marginBottom: '14px', lineHeight: 1.35 }}>
               {selectedCard.question}
             </h3>
 
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '20px' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '20px' }}>
               {selectedCard.tags && selectedCard.tags.map((t, i) => (
-                <span key={i} className="tag-badge">{t}</span>
+                <span key={i} className="tag-badge" style={{ fontSize: '0.85rem', padding: '4px 10px' }}>#{t}</span>
               ))}
               {selectedCard.pdf_page && (
-                <span className="tag-badge" style={{ borderColor: 'var(--primary)', color: 'var(--primary)' }}>Page {selectedCard.pdf_page}</span>
+                <span className="tag-badge" style={{ borderColor: 'var(--primary)', color: 'var(--primary)', fontSize: '0.85rem', padding: '4px 10px' }}>Page {selectedCard.pdf_page}</span>
               )}
             </div>
 
             <div style={{ 
               flex: 1, 
               overflowY: 'auto', 
-              padding: '24px', 
-              background: 'rgba(0,0,0,0.2)', 
-              borderRadius: '8px',
-              border: '1px solid var(--panel-border)',
+              padding: '28px', 
+              background: 'rgba(0,0,0,0.25)', 
+              borderRadius: '12px',
+              border: '2px solid var(--border-color)',
               marginBottom: '20px'
             }}>
               {isLoadingContent ? (
-                <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)' }}>Loading flashcard details...</div>
+                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)', fontSize: '1.1rem' }}>Loading flashcard details...</div>
               ) : cardContent ? (
                 <MarkdownRenderer content={cardContent.answer} cardId={selectedCard.id} />
               ) : (
-                <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)' }}>Failed to load flashcard.</div>
+                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)', fontSize: '1.1rem' }}>Failed to load flashcard.</div>
               )}
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
-              <button className="btn btn-secondary" onClick={() => setSelectedCard(null)}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+              <button 
+                className="btn btn-primary" 
+                style={{ padding: '10px 20px', fontSize: '0.95rem' }}
+                onClick={() => {
+                  const cardToEdit = selectedCard;
+                  setSelectedCard(null);
+                  handleEnterEditWorkspace(cardToEdit);
+                }}
+              >
+                Edit in Workspace
+              </button>
+              <button 
+                className="btn btn-secondary" 
+                style={{ padding: '10px 20px', fontSize: '0.95rem' }}
+                onClick={() => setSelectedCard(null)}
+              >
                 Close
               </button>
             </div>
