@@ -540,9 +540,12 @@ def update_env_configuration(req: EnvUpdateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 # Mount Vite SPA Frontend Build on home route
-frontend_dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
-if not frontend_dist.exists():
-    frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    frontend_dist = Path(sys._MEIPASS) / "frontend" / "dist"
+else:
+    frontend_dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+    if not frontend_dist.exists():
+        frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 if frontend_dist.exists():
     assets_dir = frontend_dist / "assets"

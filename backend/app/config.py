@@ -1,10 +1,15 @@
 import os
+import sys
 from pathlib import Path
 from pydantic_settings import BaseSettings
 
 def get_env_file_path() -> Path:
-    backend_root = Path(__file__).resolve().parent.parent
-    return backend_root / ".env"
+    if getattr(sys, 'frozen', False):
+        exe_dir = Path(sys.executable).resolve().parent
+        return exe_dir / ".env"
+    else:
+        backend_root = Path(__file__).resolve().parent.parent
+        return backend_root / ".env"
 
 def ensure_env_file_exists() -> Path:
     env_path = get_env_file_path()
@@ -31,8 +36,12 @@ class Settings(BaseSettings):
 
     @property
     def storage_path(self) -> Path:
-        backend_root = Path(__file__).resolve().parent.parent
-        p = (backend_root / "storage").resolve()
+        if getattr(sys, 'frozen', False):
+            exe_dir = Path(sys.executable).resolve().parent
+            p = (exe_dir / "storage").resolve()
+        else:
+            backend_root = Path(__file__).resolve().parent.parent
+            p = (backend_root / "storage").resolve()
         p.mkdir(parents=True, exist_ok=True)
         return p
 
