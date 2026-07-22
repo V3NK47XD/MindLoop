@@ -480,8 +480,9 @@ input:focus, select:focus {
 /* Split Canvas Layout */
 .editor-workspace-canvas {
   display: grid;
-  min-height: 360px;
-  max-height: 520px;
+  min-height: 480px;
+  max-height: calc(85vh - 250px);
+  height: 58vh;
   overflow: hidden;
   position: relative;
 }

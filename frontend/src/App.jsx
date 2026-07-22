@@ -885,7 +885,7 @@ function App() {
           </button>
         </header>
 
-        <div style={{ padding: '0 24px 24px 24px', width: '100%', maxWidth: '900px', margin: '0 auto' }}>
+        <div style={{ padding: '0 24px 24px 24px', width: '92vw', maxWidth: '92vw', margin: '0 auto' }}>
           <section className="glass-panel" style={{ padding: '32px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
             <h2>{selectedWorkspaceCard ? "Edit Flashcard" : "Create Flashcard Manually"}</h2>
             
@@ -1404,7 +1404,7 @@ function App() {
       {/* PDF Generator Modal */}
       {showGeneratorModal && (
         <div className="modal-overlay" onClick={() => !isGenerating && setShowGeneratorModal(false)}>
-          <div className="modal-content glass-panel" style={{ maxWidth: '550px', width: '90%' }} onClick={e => e.stopPropagation()}>
+          <div className="modal-content glass-panel" style={{ width: '90vw', maxWidth: '1100px', height: '85vh', maxHeight: '90vh', padding: '32px', display: 'flex', flexDirection: 'column', textAlign: 'left', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
               <h3 style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '1.25rem', margin: 0, fontWeight: '700' }}>
                 <FileText color="var(--primary)" size={22} />
@@ -1449,15 +1449,15 @@ function App() {
               onDragLeave={handleDrag}
               onDrop={handleDrop}
               onClick={() => !isGenerating && fileInputRef.current.click()}
-              style={{ pointerEvents: isGenerating ? 'none' : 'auto', marginBottom: '16px' }}
+              style={{ pointerEvents: isGenerating ? 'none' : 'auto', marginBottom: '16px', minHeight: '180px', flex: 1, justifyContent: 'center' }}
             >
-              <FileUp size={40} color={isGenerating ? 'var(--primary)' : 'var(--text-secondary)'} style={{ animation: isGenerating ? 'pulse 2s infinite' : 'none' }} />
+              <FileUp size={48} color={isGenerating ? 'var(--primary)' : 'var(--text-secondary)'} style={{ animation: isGenerating ? 'pulse 2s infinite' : 'none' }} />
               {isGenerating ? (
-                <span style={{ fontWeight: '600', color: 'var(--primary)' }}>Analyzing PDF with Multimodal AI ({selectedModel})...</span>
+                <span style={{ fontWeight: '600', color: 'var(--primary)', fontSize: '1rem' }}>Analyzing PDF with Multimodal AI ({selectedModel})...</span>
               ) : (
                 <>
-                  <span style={{ fontWeight: '600' }}>Drag & Drop PDF or Click to Browse</span>
-                  <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Supports text, figures, equations, diagrams</span>
+                  <span style={{ fontWeight: '600', fontSize: '1.1rem' }}>Drag & Drop PDF or Click to Browse</span>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Supports text, figures, equations, diagrams</span>
                 </>
               )}
               <input 
@@ -1474,13 +1474,14 @@ function App() {
             {generationLogs && (
               <div style={{ 
                 background: 'rgba(0,0,0,0.3)', 
-                padding: '12px', 
+                padding: '16px', 
                 borderRadius: '8px', 
-                fontSize: '0.75rem', 
+                fontSize: '0.8rem', 
                 fontFamily: 'JetBrains Mono, monospace',
                 color: 'var(--text-secondary)',
                 whiteSpace: 'pre-wrap',
-                maxHeight: '120px',
+                maxHeight: '260px',
+                flex: 1,
                 overflowY: 'auto',
                 border: '1px solid var(--panel-border)',
                 textAlign: 'left',
@@ -1505,7 +1506,7 @@ function App() {
       {/* Flashcard Detail Modal */}
       {selectedCard && (
         <div className="modal-overlay" onClick={() => setSelectedCard(null)}>
-          <div className="modal-content glass-panel" style={{ maxWidth: '650px', textAlign: 'left', width: '90%' }} onClick={e => e.stopPropagation()}>
+          <div className="modal-content glass-panel" style={{ width: '90vw', maxWidth: '1300px', height: '88vh', maxHeight: '90vh', padding: '32px', display: 'flex', flexDirection: 'column', textAlign: 'left', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
               <span className="tag-badge primary" style={{ margin: 0 }}>
                 {selectedCard.source_pdf}
@@ -1518,7 +1519,7 @@ function App() {
               </button>
             </div>
 
-            <h3 style={{ fontSize: '1.2rem', fontWeight: '700', color: '#fff', marginBottom: '12px', lineHeight: 1.4 }}>
+            <h3 style={{ fontSize: '1.35rem', fontWeight: '800', color: '#fff', marginBottom: '12px', lineHeight: 1.4 }}>
               {selectedCard.question}
             </h3>
 
@@ -1532,9 +1533,9 @@ function App() {
             </div>
 
             <div style={{ 
-              maxHeight: '380px', 
+              flex: 1, 
               overflowY: 'auto', 
-              padding: '16px', 
+              padding: '24px', 
               background: 'rgba(0,0,0,0.2)', 
               borderRadius: '8px',
               border: '1px solid var(--panel-border)',
