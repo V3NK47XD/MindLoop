@@ -158,15 +158,8 @@ Instructions:
         config_args = {
             "response_mime_type": "application/json",
             "response_schema": FlashcardListGen,
+            "temperature": 0,
         }
-        
-        # Add thinking configuration for reasoning models like gemma-4-31b-it
-        if "gemma-4" in model_name or "thinking" in model_name:
-            config_args["thinking_config"] = types.ThinkingConfig(
-                thinking_budget=2048
-            )
-        else:
-            config_args["temperature"] = 0
             
         logger.info(f"Invoking Gemini model {model_name} with config: {config_args}...")
         
