@@ -323,7 +323,15 @@ def update_card(
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
 
+        # If card is present in a connected phone library, queue the edit so phone receives update
         from app.routers.pairing import notify_listeners
+        for dev_id, phone_set in sync.device_libraries.items():
+            if card_hash in phone_set:
+                if dev_id not in sync.device_sync_queues:
+                    sync.device_sync_queues[dev_id] = []
+                if card_hash not in sync.device_sync_queues[dev_id]:
+                    sync.device_sync_queues[dev_id].append(card_hash)
+
         notify_listeners()
             
         return {"status": "success", "card_hash": card_hash}

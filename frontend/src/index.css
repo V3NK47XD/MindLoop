@@ -678,13 +678,27 @@ input:focus, select:focus {
   opacity: 0.6;
 }
 
-.editor-inline-code {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 0.85rem;
-  background: rgba(255, 255, 255, 0.08);
-  padding: 2px 6px;
-  border-radius: 4px;
-  border: 1px solid var(--border-color);
+.editor-inline-code, code.editor-inline-code {
+  font-family: 'Fira Code', 'JetBrains Mono', Consolas, Monaco, monospace;
+  font-size: 0.88em;
+  background: #1e293b;
+  color: #38bdf8;
+  padding: 3px 7px;
+  border-radius: 6px;
+  border: 1.5px solid var(--border-color);
+  display: inline-block;
+  margin: 1px 3px;
+  vertical-align: middle;
+  white-space: pre-wrap;
+  word-break: break-word;
+  box-shadow: 2px 2px 0px rgba(0, 0, 0, 0.4);
+}
+
+.preview-markdown-body p {
+  margin-top: 0;
+  margin-bottom: 0.85em;
+  line-height: 1.7;
+  word-break: break-word;
 }
 
 .editor-code-block {

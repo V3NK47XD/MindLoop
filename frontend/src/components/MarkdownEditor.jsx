@@ -243,7 +243,10 @@ const formatInlineText = (text, getAttachmentUrl) => {
   });
 
   // Inline Code `...`
-  result = result.replace(/`([^`]+)`/g, '<code class="editor-inline-code">$1</code>');
+  result = result.replace(/`([^`]+)`/g, (match, codeSnippet) => {
+    const escaped = codeSnippet.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return `<code class="editor-inline-code">${escaped}</code>`;
+  });
 
   // Bold **...**
   result = result.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
