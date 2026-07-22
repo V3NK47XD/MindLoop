@@ -730,12 +730,16 @@ function App() {
       setWsError("Answer/Content is required.");
       return;
     }
+    if (!wsTag.trim()) {
+      setWsError("Tag is required! Every flashcard must have exactly 1 tag.");
+      return;
+    }
     
     setIsSavingWs(true);
     setWsError('');
     
     // Construct tag list (max 1 tag)
-    const tags = wsTag.trim() ? [wsTag.trim()] : [];
+    const tags = [wsTag.trim()];
     
     const payload = {
       question: wsQuestion,

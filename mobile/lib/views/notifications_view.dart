@@ -297,7 +297,7 @@ class _NotificationsViewState extends State<NotificationsView> {
                                     ],
                                   ),
                                   Text(
-                                    '${_shuffledTags.where((t) => _completedTags.contains(t) || _fullyViewedTags.contains(t)).length}/${_shuffledTags.length} DONE',
+                                    '${_shuffledTags.where((t) => _completedTags.contains(t)).length}/${_shuffledTags.length} DONE',
                                     style: TextStyle(color: textColor, fontSize: 12, fontWeight: FontWeight.w900),
                                   ),
                                 ],
@@ -308,7 +308,7 @@ class _NotificationsViewState extends State<NotificationsView> {
                                 child: LinearProgressIndicator(
                                   value: _shuffledTags.isEmpty 
                                       ? 0 
-                                      : _shuffledTags.where((t) => _completedTags.contains(t) || _fullyViewedTags.contains(t)).length / _shuffledTags.length,
+                                      : _shuffledTags.where((t) => _completedTags.contains(t)).length / _shuffledTags.length,
                                   backgroundColor: isDark ? Colors.white12 : Colors.black12,
                                   valueColor: const AlwaysStoppedAnimation<Color>(Colors.green),
                                   minHeight: 8,
@@ -319,7 +319,7 @@ class _NotificationsViewState extends State<NotificationsView> {
                                 spacing: 8,
                                 runSpacing: 8,
                                 children: _shuffledTags.map((tag) {
-                                  final isCompleted = _completedTags.contains(tag) || _fullyViewedTags.contains(tag);
+                                  final isCompleted = _completedTags.contains(tag);
                                   return InkWell(
                                     onTap: () => _toggleTagCompletion(tag, !isCompleted),
                                     borderRadius: BorderRadius.circular(4),

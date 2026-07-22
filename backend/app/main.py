@@ -162,6 +162,12 @@ def create_card_manually(
     except Exception as parse_err:
         raise HTTPException(status_code=400, detail=f"Invalid card data: {parse_err}")
 
+    if not card_data_parsed.tags or len(card_data_parsed.tags) == 0 or not card_data_parsed.tags[0].strip():
+        raise HTTPException(
+            status_code=400,
+            detail="A tag is required for every flashcard."
+        )
+        
     if len(card_data_parsed.tags) > 1:
         raise HTTPException(
             status_code=400,

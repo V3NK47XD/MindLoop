@@ -182,19 +182,8 @@ class NotificationService {
       return;
     }
 
-    // Auto-complete tags that are fully viewed in library
+    // Reset round if all tags are marked completed
     bool completedChanged = false;
-    for (final tag in shuffledTags) {
-      if (!completedTags.contains(tag)) {
-        final isViewed = await _isTagFullyViewed(tag, cards);
-        if (isViewed) {
-          completedTags.add(tag);
-          completedChanged = true;
-        }
-      }
-    }
-
-    // Reset round if all tags are marked completed (either manually checked or fully viewed)
     if (completedTags.length >= shuffledTags.length && shuffledTags.isNotEmpty) {
       completedTags = [];
       shuffledTags.shuffle();
