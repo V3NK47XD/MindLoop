@@ -223,6 +223,13 @@ def create_card_manually(
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
             
+        # Auto-queue new card for sync to all connected mobile devices
+        from app.routers.pairing import notify_listeners
+        for dev_id in list(sync.device_sync_queues.keys()):
+            if card_hash not in sync.device_sync_queues[dev_id]:
+                sync.device_sync_queues[dev_id].append(card_hash)
+        notify_listeners()
+
         logger.info(f"Manually created and packaged flashcard {card_hash}")
         return {"status": "success", "card_hash": card_hash}
     except Exception as e:
@@ -243,6 +250,7 @@ def update_card(
 ):
     """
     Edits an existing flashcard. If content changes, deletes old file and packages into new hash.
+    Auto-queues updated card for sync to connected phones.
     """
     try:
         data_dict = json.loads(card_data)
@@ -335,6 +343,13 @@ def update_card(
         # Clean up temp edit directory
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
+
+        # Auto-queue new/updated card hash to all active device sync queues
+        from app.routers.pairing import notify_listeners
+        for dev_id in list(sync.device_sync_queues.keys()):
+            if new_card_hash not in sync.device_sync_queues[dev_id]:
+                sync.device_sync_queues[dev_id].append(new_card_hash)
+        notify_listeners()
             
         return {"status": "success", "card_hash": new_card_hash}
     except Exception as e:
@@ -374,24 +389,39 @@ def delete_card(card_hash: str):
 
 @app.get("/api/cards/{card_hash}/content")
 def get_card_content(card_hash: str):
-    """Retrieves the full card details including the answer body from content.md."""
+    """Retrieves the full card details including the answer body from content.md or device metadata cache."""
     import zipfile
     import json
     file_path = settings.storage_path / f"{card_hash}.flash"
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Flashcard not found")
-        
-    try:
-        with zipfile.ZipFile(file_path, "r") as zip_file:
-            metadata_str = zip_file.read("metadata.json").decode("utf-8")
-            metadata = json.loads(metadata_str)
-            answer_str = zip_file.read("content.md").decode("utf-8")
-            metadata["id"] = card_hash
-            metadata["answer"] = answer_str
-            return metadata
-    except Exception as e:
-        logger.error(f"Failed to read card content for {card_hash}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    if file_path.exists():
+        try:
+            with zipfile.ZipFile(file_path, "r") as zip_file:
+                metadata_str = zip_file.read("metadata.json").decode("utf-8")
+                metadata = json.loads(metadata_str)
+                answer_str = zip_file.read("content.md").decode("utf-8")
+                metadata["id"] = card_hash
+                metadata["answer"] = answer_str
+                return metadata
+        except Exception as e:
+            logger.error(f"Failed to read card content for {card_hash}: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # Dynamic Fallback: Check if card content exists in mobile device metadata cache
+    for dev_id, meta_map in sync.device_metadata_cache.items():
+        if card_hash in meta_map:
+            cached_item = meta_map[card_hash]
+            return {
+                "id": card_hash,
+                "question": cached_item.get("question") or "Untitled Flashcard",
+                "answer": cached_item.get("answer") or "*Card stored on Mobile Device*",
+                "created_at": cached_item.get("created_at"),
+                "tags": cached_item.get("tags") or [],
+                "source_pdf": cached_item.get("source_pdf") or "Mobile Storage",
+                "pdf_page": cached_item.get("pdf_page") or 0,
+                "attachments": cached_item.get("attachments") or []
+            }
+
+    raise HTTPException(status_code=404, detail="Flashcard not found")
 
 @app.get("/api/cards/{card_hash}/metadata")
 def get_card_metadata(card_hash: str):
