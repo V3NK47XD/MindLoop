@@ -16,7 +16,8 @@ import {
   Sparkles,
   Link,
   Check,
-  AlertTriangle
+  AlertTriangle,
+  Sliders
 } from 'lucide-react';
 
 const API_BASE = 'http://localhost:6769';
@@ -302,8 +303,51 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFilterTag, setSelectedFilterTag] = useState('All');
   
+  // Env Editor state
+  const [envRawText, setEnvRawText] = useState('');
+  const [envFilePath, setEnvFilePath] = useState('');
+  const [isEnvSaving, setIsEnvSaving] = useState(false);
+  const [envMessage, setEnvMessage] = useState('');
+
+  const fetchEnvConfig = async () => {
+    setEnvMessage('');
+    try {
+      const res = await fetch(`${API_BASE}/api/env`);
+      if (res.ok) {
+        const data = await res.json();
+        setEnvRawText(data.raw_env || '');
+        setEnvFilePath(data.env_file_path || '');
+      }
+    } catch (err) {
+      console.error("Failed to fetch .env config:", err);
+    }
+  };
+
+  const handleSaveEnvConfig = async () => {
+    setIsEnvSaving(true);
+    setEnvMessage('');
+    try {
+      const res = await fetch(`${API_BASE}/api/env`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ raw_env: envRawText })
+      });
+      if (res.ok) {
+        setEnvMessage("✅ .env Configuration updated successfully!");
+        fetchEnvConfig();
+      } else {
+        const data = await res.json();
+        setEnvMessage(`❌ Error updating .env: ${data.detail}`);
+      }
+    } catch (err) {
+      setEnvMessage(`❌ Network error: ${err.message}`);
+    } finally {
+      setIsEnvSaving(false);
+    }
+  };
+  
   // Navigation & Workspace states
-  const [currentView, setCurrentView] = useState('sync-center'); // 'sync-center', 'pc-manage', 'phone-manage', 'workspace', 'generated-review'
+  const [currentView, setCurrentView] = useState('sync-center'); // 'sync-center', 'pc-manage', 'phone-manage', 'workspace', 'generated-review', 'env-settings'
   const [selectedWorkspaceCard, setSelectedWorkspaceCard] = useState(null);
   const [generatedReviewCards, setGeneratedReviewCards] = useState([]);
   const [selectedGeneratedCard, setSelectedGeneratedCard] = useState(null);
@@ -1514,6 +1558,80 @@ function App() {
     );
   };
 
+  const renderEnvSettingsView = () => {
+    return (
+      <div className="app-container">
+        <header className="app-header glass-panel">
+          <div className="logo-container" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <img src="/icon.png" alt="MindLoop Logo" style={{ height: '32px', width: '32px', borderRadius: '6px' }} />
+            <h1 className="logo-text">MindLoop / Environment Settings (.env)</h1>
+          </div>
+          <button className="btn btn-secondary" onClick={() => setCurrentView('sync-center')}>
+            Back to Sync Center
+          </button>
+        </header>
+
+        <div style={{ padding: '0 24px 24px 24px', width: '92vw', maxWidth: '92vw', margin: '0 auto' }}>
+          <section className="glass-panel" style={{ padding: '32px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h2>Environment Variables (.env File Configuration)</h2>
+              <button 
+                className="btn btn-primary" 
+                onClick={handleSaveEnvConfig}
+                disabled={isEnvSaving}
+              >
+                {isEnvSaving ? "Saving..." : "Save .env Configuration"}
+              </button>
+            </div>
+
+            {envFilePath && (
+              <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.05)', padding: '10px 14px', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
+                <strong>Target .env File Path:</strong> <code style={{ color: 'var(--cyan)' }}>{envFilePath}</code>
+              </div>
+            )}
+
+            {envMessage && (
+              <div style={{ 
+                padding: '12px 16px', 
+                borderRadius: '8px', 
+                fontWeight: 'bold',
+                background: envMessage.startsWith('✅') ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
+                border: `2px solid ${envMessage.startsWith('✅') ? 'var(--success)' : 'var(--red)'}`,
+                color: envMessage.startsWith('✅') ? 'var(--success)' : 'var(--red)'
+              }}>
+                {envMessage}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <label style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>
+                Raw .env Configuration Text Editor:
+              </label>
+              <textarea 
+                rows={16}
+                value={envRawText}
+                onChange={(e) => setEnvRawText(e.target.value)}
+                placeholder="HOST=0.0.0.0&#10;PORT=6769&#10;GEMINI_API_KEY=your_api_key_here&#10;GEMINI_MODEL=gemma-4-31b-it&#10;STORAGE_DIR=./storage"
+                style={{
+                  width: '100%',
+                  fontFamily: 'Fira Code, JetBrains Mono, monospace',
+                  fontSize: '0.95rem',
+                  lineHeight: '1.6',
+                  background: '#090d16',
+                  color: '#38bdf8',
+                  padding: '16px',
+                  borderRadius: '8px',
+                  border: '2px solid var(--border-color)',
+                  boxShadow: '4px 4px 0px var(--shadow-color)'
+                }}
+              />
+            </div>
+          </section>
+        </div>
+      </div>
+    );
+  };
+
   if (currentView === 'pc-manage') {
     return renderPcManageView();
   }
@@ -1525,6 +1643,9 @@ function App() {
   }
   if (currentView === 'generated-review') {
     return renderGeneratedReviewView();
+  }
+  if (currentView === 'env-settings') {
+    return renderEnvSettingsView();
   }
 
   return (
@@ -1558,6 +1679,11 @@ function App() {
           <button className="btn btn-secondary" onClick={() => setShowGeneratorModal(true)} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Plus size={18} />
             Generate Flashcards
+          </button>
+
+          <button className="btn btn-secondary" onClick={() => { fetchEnvConfig(); setCurrentView('env-settings'); }} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Sliders size={18} />
+            Env Config
           </button>
 
           <button className="btn btn-primary" onClick={handleOpenPairing}>

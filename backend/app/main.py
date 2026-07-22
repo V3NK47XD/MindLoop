@@ -4,6 +4,9 @@ import uuid
 import logging
 import json
 import zipfile
+import webbrowser
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -11,7 +14,9 @@ from pydantic import BaseModel
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
+from app import config
 from app.config import settings
 from app.routers import pairing, sync
 from app.services.pdf_service import extract_pdf_content
@@ -24,11 +29,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def open_browser_delayed():
+    time.sleep(1.5)
+    try:
+        webbrowser.open(f"http://localhost:{settings.PORT}")
+        logger.info(f"Automatically opened Web UI in browser at http://localhost:{settings.PORT}")
+    except Exception as e:
+        logger.warning(f"Could not auto-open browser: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Initialize UDP broadcast discovery listener
     logger.info("Starting UDP Broadcast Discovery Listener...")
     pairing.start_udp_broadcast_listener()
+    
+    # Auto-open web browser
+    threading.Thread(target=open_browser_delayed, daemon=True).start()
+    
     yield
     # Shutdown: Clean up UDP listener
     logger.info("Stopping UDP Broadcast Discovery Listener...")
@@ -460,6 +477,74 @@ def get_card_asset(card_hash: str, filename: str):
         logger.error(f"Failed to extract asset {filename} from {card_hash}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+class EnvUpdateRequest(BaseModel):
+    raw_env: str
+
+@app.get("/api/env")
+def get_env_configuration():
+    """Reads the .env configuration file (creating it with default settings if missing)."""
+    env_path = config.ensure_env_file_exists()
+    raw_content = env_path.read_text(encoding="utf-8")
+    
+    env_vars = {}
+    for line in raw_content.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            env_vars[k.strip()] = v.strip()
+            
+    return {
+        "raw_env": raw_content,
+        "env_vars": env_vars,
+        "env_file_path": str(env_path)
+    }
+
+@app.post("/api/env")
+def update_env_configuration(req: EnvUpdateRequest):
+    """Overwrites the .env configuration file and updates runtime environment variables."""
+    env_path = config.ensure_env_file_exists()
+    try:
+        env_path.write_text(req.raw_env, encoding="utf-8")
+        
+        # Update runtime os.environ and settings
+        for line in req.raw_env.splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                k_str = k.strip()
+                v_str = v.strip()
+                os.environ[k_str] = v_str
+                if hasattr(config.settings, k_str):
+                    setattr(config.settings, k_str, v_str)
+                    
+        logger.info(".env file updated via Web UI.")
+        return {"status": "success", "message": ".env file updated successfully."}
+    except Exception as e:
+        logger.error(f"Failed to update .env file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Mount Vite SPA Frontend Build on home route
+frontend_dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+if not frontend_dist.exists():
+    frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+if frontend_dist.exists():
+    assets_dir = frontend_dist / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="static_assets")
+        
+    @app.get("/{full_path:path}")
+    async def serve_spa_frontend(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API route not found")
+        target_file = frontend_dist / full_path
+        if target_file.exists() and target_file.is_file():
+            return FileResponse(str(target_file))
+        index_file = frontend_dist / "index.html"
+        if index_file.exists():
+            return FileResponse(str(index_file))
+        raise HTTPException(status_code=404, detail="Frontend index.html not found")
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host=settings.HOST, port=settings.PORT, reload=True)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=6769, reload=True)
