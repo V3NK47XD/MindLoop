@@ -1,4 +1,5 @@
 import os
+import sys
 import shutil
 import uuid
 import logging
@@ -9,6 +10,14 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+
+# Ensure backend and app directories are in sys.path
+backend_dir = Path(__file__).resolve().parent.parent
+app_dir = Path(__file__).resolve().parent
+for d in [str(backend_dir), str(app_dir)]:
+    if d not in sys.path:
+        sys.path.insert(0, d)
+
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Response
@@ -16,11 +25,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-from app import config
-from app.config import settings
-from app.routers import pairing, sync
-from app.services.pdf_service import extract_pdf_content
-from app.services.generator import generate_flashcards_from_pdf
+try:
+    from app import config
+    from app.config import settings
+    from app.routers import pairing, sync
+    from app.services.pdf_service import extract_pdf_content
+    from app.services.generator import generate_flashcards_from_pdf
+except ModuleNotFoundError:
+    import config
+    from config import settings
+    from routers import pairing, sync
+    from services.pdf_service import extract_pdf_content
+    from services.generator import generate_flashcards_from_pdf
 
 # Setup logging
 logging.basicConfig(
@@ -547,4 +563,7 @@ if frontend_dist.exists():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=6769, reload=True)
+    try:
+        uvicorn.run("app.main:app", host="0.0.0.0", port=6769, reload=True)
+    except Exception:
+        uvicorn.run(app, host="0.0.0.0", port=6769)
