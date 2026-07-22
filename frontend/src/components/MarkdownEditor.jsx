@@ -22,7 +22,7 @@ const renderKatex = (mathString, displayMode = false) => {
 };
 
 // Custom Markdown + KaTeX + Callouts HTML Renderer
-const renderMarkdownHTML = (markdownText, getAttachmentUrl) => {
+export const renderMarkdownHTML = (markdownText, getAttachmentUrl) => {
   if (!markdownText) return '';
 
   let lines = markdownText.split('\n');

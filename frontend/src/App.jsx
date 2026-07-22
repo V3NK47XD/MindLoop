@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import MarkdownEditor from './components/MarkdownEditor';
+import MarkdownEditor, { renderMarkdownHTML } from './components/MarkdownEditor';
 import { 
   FileUp, 
   Smartphone, 
@@ -178,16 +178,26 @@ function TextBlock({ text, cardId }) {
 
 function MarkdownRenderer({ content, cardId }) {
   if (!content) return null;
-  const parts = content.split(/\$\$/g);
+
+  const resolveUrl = (src) => {
+    if (!src) return '';
+    if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('data:')) {
+      return src;
+    }
+    const filename = src.replace(/^assets\//, '');
+    if (cardId) {
+      return `${API_BASE}/api/cards/${cardId}/assets/${filename}`;
+    }
+    return src;
+  };
+
   return (
-    <div className="markdown-body">
-      {parts.map((part, index) => {
-        if (index % 2 === 1) {
-          return <MathBlock key={index} tex={part.trim()} />;
-        }
-        return <TextBlock key={index} text={part} cardId={cardId} />;
-      })}
-    </div>
+    <div 
+      className="preview-markdown-body"
+      dangerouslySetInnerHTML={{ 
+        __html: renderMarkdownHTML(content, resolveUrl) 
+      }}
+    />
   );
 }
 
