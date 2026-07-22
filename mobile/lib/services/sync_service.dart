@@ -245,6 +245,55 @@ class SyncService extends ChangeNotifier {
     }
   }
 
+  // Manual IP / Connection URL Connection Method
+  Future<bool> connectWithManualUrl(String urlOrIp) async {
+    try {
+      String raw = urlOrIp.trim();
+      if (raw.isEmpty) return false;
+
+      if (!raw.startsWith('http://') && !raw.startsWith('https://')) {
+        raw = 'http://$raw';
+      }
+
+      final uri = Uri.parse(raw);
+      final host = uri.host;
+      final port = uri.hasPort ? uri.port : 6769;
+
+      if (host.isEmpty) return false;
+
+      print("Attempting manual connection to $host:$port");
+
+      final paired = await _runPairingHandshake(host, port, "manual");
+      final heartbeat = await _tryHeartbeatDirect(host, port);
+
+      if (paired || heartbeat) {
+        await _saveConnection(host, port);
+        triggerSyncCycle();
+        return true;
+      }
+    } catch (e) {
+      print("Manual URL connection error: $e");
+    }
+    return false;
+  }
+
+  Future<bool> _tryHeartbeatDirect(String host, int port) async {
+    try {
+      final uri = Uri.parse("http://$host:$port/api/pairing/heartbeat/$_deviceId");
+      final response = await http.post(
+        uri,
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({
+          "device_name": _deviceName ?? "Flutter Client",
+          "client_ip": "127.0.0.1",
+        }),
+      ).timeout(const Duration(seconds: 2));
+      return response.statusCode == 200;
+    } catch (e) {
+      return false;
+    }
+  }
+
   // Iterate over IPs to pair
   Future<String?> _sweepIpsForPairing(List<String> ips, int port, String pairingCode) async {
     for (String ip in ips) {

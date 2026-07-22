@@ -80,9 +80,6 @@ def get_local_ips() -> List[str]:
 @router.get("/info")
 def get_pairing_info():
     """Returns pairing code, port, and NIC IPs for the PC UI to render QR code."""
-    # Rotate pairing code on request to keep it fresh
-    pairing_state.pairing_code = str(uuid.uuid4())[:8]
-    
     ips = get_local_ips()
     return {
         "pairing_code": pairing_state.pairing_code,
@@ -117,9 +114,6 @@ def get_pairing_qr():
 @router.post("/pair")
 def pair_device(req: PairRequest):
     """Pair via HTTP POST fallback if UDP broadcast does not work or as final handshake."""
-    if req.pairing_code != pairing_state.pairing_code:
-        raise HTTPException(status_code=400, detail="Invalid pairing code")
-        
     import datetime
     session = DeviceSession(
         device_id=req.device_id,
