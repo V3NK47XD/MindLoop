@@ -303,11 +303,26 @@ function App() {
   const [selectedFilterTag, setSelectedFilterTag] = useState('All');
   
   // Navigation & Workspace states
-  const [currentView, setCurrentView] = useState('sync-center'); // 'sync-center', 'pc-manage', 'phone-manage', 'workspace'
+  const [currentView, setCurrentView] = useState('sync-center'); // 'sync-center', 'pc-manage', 'phone-manage', 'workspace', 'generated-review'
   const [selectedWorkspaceCard, setSelectedWorkspaceCard] = useState(null);
+  const [generatedReviewCards, setGeneratedReviewCards] = useState([]);
+  const [selectedGeneratedCard, setSelectedGeneratedCard] = useState(null);
   const [wsQuestion, setWsQuestion] = useState('');
   const [wsAnswer, setWsAnswer] = useState('');
   const [wsTag, setWsTag] = useState('');
+
+  const selectGeneratedCardForEdit = (card) => {
+    setSelectedWorkspaceCard(card);
+    setSelectedGeneratedCard(card);
+    setWsQuestion(card.question || '');
+    setWsAnswer(card.answer || '');
+    setWsTag(card.tags?.[0] || '');
+    setWsSourcePdf(card.source_pdf || 'Generated PDF');
+    setWsPdfRefLine(card.pdf_page || 0);
+    setWsExistingAttachments(card.attachments || []);
+    setWsImages([]);
+    setWsError('');
+  };
   const [wsSourcePdf, setWsSourcePdf] = useState('Manual');
   const [wsPdfRefLine, setWsPdfRefLine] = useState(0);
   const [wsError, setWsError] = useState('');
@@ -566,9 +581,27 @@ function App() {
 
       const data = await res.json();
       if (res.ok) {
-        setGenerationLogs(prev => prev + `Successfully generated ${data.count} flashcards!\nFiles saved in local storage.\n`);
+        setGenerationLogs(prev => prev + `Successfully generated ${data.count} flashcards!\nOpening review canvas...\n`);
         fetchPcLibrary();
         if (activeDevice) fetchComparison();
+
+        if (data.card_hashes && data.card_hashes.length > 0) {
+          const loadedCards = await Promise.all(data.card_hashes.map(async (hash) => {
+            try {
+              const cRes = await fetch(`${API_BASE}/api/cards/${hash}/content`);
+              if (cRes.ok) return await cRes.json();
+            } catch (_) {}
+            return null;
+          }));
+          const validCards = loadedCards.filter(Boolean);
+
+          if (validCards.length > 0) {
+            setGeneratedReviewCards(validCards);
+            selectGeneratedCardForEdit(validCards[0]);
+            setShowGeneratorModal(false);
+            setCurrentView('generated-review');
+          }
+        }
       } else {
         setGenerationLogs(prev => prev + `Error: ${data.detail || 'Unknown error occurred.'}\n`);
       }
@@ -726,8 +759,23 @@ function App() {
         alert(selectedWorkspaceCard ? "Flashcard updated successfully!" : "Flashcard created successfully!");
         fetchPcLibrary();
         if (activeDevice) fetchComparison();
-        // Return to PC manage view
-        setCurrentView('pc-manage');
+
+        if (currentView === 'generated-review') {
+          const updatedCard = {
+            ...selectedWorkspaceCard,
+            id: data.card_hash || selectedWorkspaceCard?.id,
+            question: wsQuestion,
+            answer: wsAnswer,
+            tags: tags,
+            source_pdf: wsSourcePdf,
+            pdf_page: parseInt(wsPdfRefLine) || 0,
+            attachments: data.attachments || wsExistingAttachments
+          };
+          setGeneratedReviewCards(prev => prev.map(c => c.id === selectedWorkspaceCard.id ? updatedCard : c));
+          selectGeneratedCardForEdit(updatedCard);
+        } else {
+          setCurrentView('pc-manage');
+        }
       } else {
         setWsError(data.detail || "Failed to save flashcard.");
       }
@@ -1114,6 +1162,294 @@ function App() {
     );
   };
 
+  const renderGeneratedReviewView = () => {
+    return (
+      <div className="app-container">
+        <header className="app-header glass-panel">
+          <div className="logo-container" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <img src="/icon.png" alt="MindLoop Logo" style={{ height: '32px', width: '32px', borderRadius: '6px' }} />
+            <h1 className="logo-text">MindLoop / Generated Flashcards Review ({generatedReviewCards.length})</h1>
+          </div>
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button className="btn btn-secondary" onClick={() => setCurrentView('sync-center')}>
+              Finish & Go to Sync Center
+            </button>
+            <button className="btn btn-primary" onClick={() => setCurrentView('pc-manage')}>
+              PC Storage Manager
+            </button>
+          </div>
+        </header>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: '20px', padding: '0 24px 24px 24px', width: '96vw', margin: '0 auto' }}>
+          {/* Left Sidebar: Generated Flashcards List */}
+          <aside className="glass-panel" style={{ padding: '18px', display: 'flex', flexDirection: 'column', gap: '14px', height: 'calc(90vh - 100px)', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid var(--border-color)', paddingBottom: '10px' }}>
+              <h3 style={{ fontSize: '1.05rem', fontWeight: '800', margin: 0 }}>Newly Generated Cards</h3>
+              <span className="tag-badge primary" style={{ margin: 0 }}>{generatedReviewCards.length} Cards</span>
+            </div>
+
+            <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: 0, textAlign: 'left' }}>
+              Select any card below to review, edit markdown, or manage image attachments in the Notion editor.
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {generatedReviewCards.map((card, index) => {
+                const isSelected = selectedGeneratedCard?.id === card.id;
+                return (
+                  <div
+                    key={card.id || index}
+                    className={`generated-card-item ${isSelected ? 'active' : ''}`}
+                    onClick={() => selectGeneratedCardForEdit(card)}
+                  >
+                    <div className="gen-card-headline">{card.question || "Untitled Flashcard"}</div>
+                    <div className="gen-card-badges">
+                      {card.tags && card.tags.map((t, i) => (
+                        <span key={i} className="tag-badge">#{t}</span>
+                      ))}
+                      {card.pdf_page ? (
+                        <span className="tag-badge primary">Page {card.pdf_page}</span>
+                      ) : null}
+                      {card.attachments && card.attachments.length > 0 ? (
+                        <span className="tag-badge green">📷 {card.attachments.length}</span>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </aside>
+
+          {/* Right Main Editor Canvas */}
+          <main className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px', height: 'calc(90vh - 100px)', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h2>Review & Edit Flashcard</h2>
+              <button 
+                className="btn btn-primary" 
+                onClick={handleSaveWorkspaceCard}
+                disabled={isSavingWs}
+              >
+                {isSavingWs ? "Saving..." : "Save Card Edits"}
+              </button>
+            </div>
+
+            {wsError && (
+              <div style={{ color: 'var(--red)', background: 'rgba(239,68,68,0.1)', padding: '12px', border: '2px solid var(--red)', borderRadius: '8px', fontWeight: 'bold', textTransform: 'uppercase', fontSize: '0.85rem' }}>
+                {wsError}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', textAlign: 'left' }}>
+              <div>
+                <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px' }}>Topic Headline (Question / Front Side)</label>
+                <input 
+                  type="text" 
+                  value={wsQuestion} 
+                  onChange={(e) => setWsQuestion(e.target.value)} 
+                  placeholder="Topic Headline..."
+                  style={{ width: '100%' }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px' }}>
+                  Detailed Content (Notion / AppFlowy Rich Workspace Editor)
+                </label>
+                <MarkdownEditor 
+                  value={wsAnswer} 
+                  onChange={setWsAnswer} 
+                  getAttachmentUrl={(src) => {
+                    if (!src) return '';
+                    if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('data:')) {
+                      return src;
+                    }
+                    const filename = src.replace(/^assets\//, '');
+                    const localFile = wsImages.find(f => f.name === filename);
+                    if (localFile) {
+                      return URL.createObjectURL(localFile);
+                    }
+                    if (selectedWorkspaceCard) {
+                      return `${API_BASE}/api/cards/${selectedWorkspaceCard.id}/assets/${filename}`;
+                    }
+                    return src;
+                  }}
+                  placeholder="Type your markdown content here... Press '/' for block commands!"
+                />
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                <div>
+                  <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px' }}>Tag (Exactly 1 Tag Allowed)</label>
+                  <input 
+                    type="text" 
+                    value={wsTag} 
+                    onChange={(e) => setWsTag(e.target.value)} 
+                    placeholder="e.g. machine-learning"
+                    style={{ width: '100%' }}
+                  />
+                  {allTags.length > 0 && (
+                    <div style={{ marginTop: '8px' }}>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Quick Select Tag:</span>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '4px' }}>
+                        {allTags.map((t, idx) => (
+                          <span 
+                            key={idx} 
+                            className="tag-badge" 
+                            style={{ cursor: 'pointer' }}
+                            onClick={() => setWsTag(t)}
+                          >
+                            #{t}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  <div>
+                    <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px' }}>Source PDF</label>
+                    <input 
+                      type="text" 
+                      value={wsSourcePdf} 
+                      onChange={(e) => setWsSourcePdf(e.target.value)} 
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px' }}>PDF Page / Ref Line</label>
+                    <input 
+                      type="number" 
+                      value={wsPdfRefLine} 
+                      onChange={(e) => setWsPdfRefLine(parseInt(e.target.value) || 0)} 
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Images & Diagrams Section */}
+              <div style={{ marginTop: '16px', borderTop: '2.5px dashed var(--border-color)', paddingTop: '16px', textAlign: 'left' }}>
+                <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px' }}>Images / Diagrams (Optional)</label>
+                <div style={{ display: 'flex', gap: '16px', alignItems: 'center', marginBottom: '16px' }}>
+                  <input 
+                    type="file" 
+                    multiple 
+                    accept="image/*" 
+                    id="gen-ws-image-upload"
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      if (e.target.files) {
+                        setWsImages(prev => [...prev, ...Array.from(e.target.files)]);
+                      }
+                    }}
+                  />
+                  <label htmlFor="gen-ws-image-upload" className="btn btn-secondary" style={{ cursor: 'pointer', margin: 0 }}>
+                    Select Image Files
+                  </label>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    Choose images to package inside the flashcard ZIP.
+                  </span>
+                </div>
+
+                {/* Combined list of files */}
+                {((wsExistingAttachments && wsExistingAttachments.length > 0) || (wsImages && wsImages.length > 0)) && (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', background: 'var(--panel-bg)', padding: '16px', borderRadius: '8px', border: '1.5px solid var(--border-color)' }}>
+                    {/* Existing attachments */}
+                    <div>
+                      <h4 style={{ fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '8px', textTransform: 'uppercase' }}>Active Attachments ({wsExistingAttachments.length})</h4>
+                      {wsExistingAttachments.length === 0 ? (
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>No active attachments.</span>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {wsExistingAttachments.map((att, i) => {
+                            const filename = att.split('/').pop();
+                            const imageUrl = selectedWorkspaceCard ? `${API_BASE}/api/cards/${selectedWorkspaceCard.id}/assets/${filename}` : '';
+                            return (
+                              <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', border: '1px solid var(--panel-border)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
+                                  {imageUrl && <img src={imageUrl} alt={filename} style={{ width: '32px', height: '32px', borderRadius: '4px', objectFit: 'cover', border: '1px solid var(--border-color)' }} />}
+                                  <span style={{ fontSize: '0.75rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={filename}>{filename}</span>
+                                </div>
+                                <div style={{ display: 'flex', gap: '6px' }}>
+                                  <button 
+                                    className="btn btn-secondary" 
+                                    style={{ padding: '2px 6px', fontSize: '0.7rem' }}
+                                    onClick={() => setWsAnswer(prev => prev + `\n![${filename.split('.')[0]}](assets/${filename})`)}
+                                  >
+                                    Insert Ref
+                                  </button>
+                                  <button 
+                                    className="btn btn-danger" 
+                                    style={{ padding: '2px 6px', fontSize: '0.7rem', background: 'var(--red)', color: '#fff' }}
+                                    onClick={() => setWsExistingAttachments(prev => prev.filter(a => a !== att))}
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* New uploads */}
+                    <div>
+                      <h4 style={{ fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '8px', textTransform: 'uppercase' }}>New Uploads ({wsImages.length})</h4>
+                      {wsImages.length === 0 ? (
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>No new files added.</span>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {wsImages.map((file, i) => {
+                            const tempUrl = URL.createObjectURL(file);
+                            return (
+                              <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', border: '1px solid var(--panel-border)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
+                                  <img src={tempUrl} alt={file.name} style={{ width: '32px', height: '32px', borderRadius: '4px', objectFit: 'cover', border: '1px solid var(--border-color)' }} />
+                                  <span style={{ fontSize: '0.75rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={file.name}>{file.name}</span>
+                                </div>
+                                <div style={{ display: 'flex', gap: '6px' }}>
+                                  <button 
+                                    className="btn btn-secondary" 
+                                    style={{ padding: '2px 6px', fontSize: '0.7rem' }}
+                                    onClick={() => setWsAnswer(prev => prev + `\n![${file.name.split('.')[0]}](assets/${file.name})`)}
+                                  >
+                                    Insert Ref
+                                  </button>
+                                  <button 
+                                    className="btn btn-danger" 
+                                    style={{ padding: '2px 6px', fontSize: '0.7rem', background: 'var(--red)', color: '#fff' }}
+                                    onClick={() => setWsImages(prev => prev.filter((_, idx) => idx !== i))}
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '12px' }}>
+              <button 
+                className="btn btn-primary" 
+                onClick={handleSaveWorkspaceCard}
+                disabled={isSavingWs}
+              >
+                {isSavingWs ? "Saving..." : "Save Card Edits"}
+              </button>
+            </div>
+          </main>
+        </div>
+      </div>
+    );
+  };
+
   if (currentView === 'pc-manage') {
     return renderPcManageView();
   }
@@ -1122,6 +1458,9 @@ function App() {
   }
   if (currentView === 'workspace') {
     return renderWorkspaceView();
+  }
+  if (currentView === 'generated-review') {
+    return renderGeneratedReviewView();
   }
 
   return (

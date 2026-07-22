@@ -833,3 +833,48 @@ input:focus, select:focus {
   font-size: 0.7rem;
 }
 
+/* Generated Flashcards Review Sidebar */
+.generated-card-item {
+  padding: 12px 14px;
+  background: var(--panel-bg);
+  border: 2.5px solid var(--border-color);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+}
+
+.generated-card-item:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 4px 4px 0px var(--shadow-color);
+  border-color: var(--cyan);
+}
+
+.generated-card-item.active {
+  background: rgba(6, 182, 212, 0.15);
+  border: 2.5px solid var(--cyan);
+  box-shadow: 4px 4px 0px var(--cyan);
+}
+
+.gen-card-headline {
+  font-weight: 800;
+  font-size: 0.88rem;
+  color: var(--text-color);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.gen-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
