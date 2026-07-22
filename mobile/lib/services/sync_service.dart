@@ -52,6 +52,9 @@ class SyncService extends ChangeNotifier {
     }
     
     await checkPcConnection();
+    if (_isPcReachable) {
+      triggerSyncCycle();
+    }
     startPingTimer();
   }
 
@@ -87,6 +90,9 @@ class SyncService extends ChangeNotifier {
       if (_isPcReachable != reachable) {
         _isPcReachable = reachable;
         notifyListeners();
+        if (reachable) {
+          triggerSyncCycle();
+        }
       }
     } catch (_) {
       if (_isPcReachable) {

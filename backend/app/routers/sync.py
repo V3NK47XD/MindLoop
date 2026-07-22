@@ -160,7 +160,7 @@ from app.routers.pairing import notify_listeners
 def confirm_sync_complete(device_id: str, card_hash: str, checksum: str = None):
     """The mobile phone calls this to notify that it has successfully downloaded and saved the card."""
     # Check file integrity using SHA256 checksum if provided by phone
-    file_path = settings.STORAGE_PATH / f"{card_hash}.flash"
+    file_path = settings.storage_path / f"{card_hash}.flash"
     if file_path.exists() and checksum:
         sha256 = hashlib.sha256()
         try:
