@@ -216,13 +216,6 @@ def create_card_manually(
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
             
-        # Auto-queue new card for sync to all connected mobile devices
-        from app.routers.pairing import notify_listeners
-        for dev_id in list(sync.device_sync_queues.keys()):
-            if card_id not in sync.device_sync_queues[dev_id]:
-                sync.device_sync_queues[dev_id].append(card_id)
-        notify_listeners()
-
         logger.info(f"Manually created and packaged flashcard {card_id}")
         return {"status": "success", "card_hash": card_id}
     except Exception as e:
@@ -244,7 +237,6 @@ def update_card(
     """
     Edits an existing flashcard in-place preserving its permanent 128-character ID.
     Rewrites content.md, metadata.json, and assets inside {card_id}.flash.
-    Auto-queues updated card for sync to connected phones.
     """
     try:
         data_dict = json.loads(card_data)
@@ -331,13 +323,7 @@ def update_card(
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
 
-        # Auto-queue updated card hash to all active device sync queues
         from app.routers.pairing import notify_listeners
-        for dev_id in list(sync.device_sync_queues.keys()):
-            if dev_id not in sync.device_sync_queues:
-                sync.device_sync_queues[dev_id] = []
-            if card_hash not in sync.device_sync_queues[dev_id]:
-                sync.device_sync_queues[dev_id].append(card_hash)
         notify_listeners()
             
         return {"status": "success", "card_hash": card_hash}

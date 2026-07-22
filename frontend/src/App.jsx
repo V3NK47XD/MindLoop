@@ -786,9 +786,26 @@ function App() {
     }
   };
 
-  // Filter lists based on toggle
+  const [phoneSearchQuery, setPhoneSearchQuery] = useState('');
+  const [phoneFilterTag, setPhoneFilterTag] = useState('All');
+
+  // Filter lists based on toggle & search
   const visiblePcCards = showSyncedCards ? pcCards : pcCards.filter(c => c.sync_status !== 'synced');
   const visiblePhoneCards = showSyncedCards ? phoneCards : phoneCards.filter(c => c.sync_status !== 'synced');
+
+  const phoneTags = useMemo(() => {
+    const tagSet = new Set();
+    phoneCards.forEach(c => c.tags?.forEach(t => tagSet.add(t)));
+    return Array.from(tagSet).sort();
+  }, [phoneCards]);
+
+  const filteredPhoneCards = visiblePhoneCards.filter(card => {
+    const matchesSearch = !phoneSearchQuery || 
+      card.question?.toLowerCase().includes(phoneSearchQuery.toLowerCase()) || 
+      card.source_pdf?.toLowerCase().includes(phoneSearchQuery.toLowerCase());
+    const matchesTag = phoneFilterTag === 'All' || card.tags?.includes(phoneFilterTag);
+    return matchesSearch && matchesTag;
+  });
 
   const renderPcManageView = () => {
     return (
@@ -885,15 +902,36 @@ function App() {
 
         <div style={{ padding: '0 24px 24px 24px', width: '100%' }}>
           <section className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            <h2>Phone Storage Manager {activeDevice ? `(${visiblePhoneCards.length} cards)` : ''}</h2>
+            <h2>Phone Storage Manager {activeDevice ? `(${filteredPhoneCards.length} cards)` : ''}</h2>
+
+            {/* Search Bar & Tag Filter Dropdown */}
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <input 
+                type="text" 
+                placeholder="Search phone cards by question or PDF..." 
+                value={phoneSearchQuery}
+                onChange={(e) => setPhoneSearchQuery(e.target.value)}
+                style={{ flex: 1 }}
+              />
+              <select
+                value={phoneFilterTag}
+                onChange={(e) => setPhoneFilterTag(e.target.value)}
+                style={{ maxWidth: '200px' }}
+              >
+                <option value="All">All Tags</option>
+                {phoneTags.map((tag, idx) => (
+                  <option key={idx} value={tag}>{tag}</option>
+                ))}
+              </select>
+            </div>
 
             <div className="cards-list" style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxHeight: '600px', overflowY: 'auto' }}>
               {!activeDevice ? (
                 <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>No device connected.</div>
-              ) : visiblePhoneCards.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>No cards synced to phone.</div>
+              ) : filteredPhoneCards.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>No cards found.</div>
               ) : (
-                visiblePhoneCards.map(card => (
+                filteredPhoneCards.map(card => (
                   <div 
                     key={card.id} 
                     className="flashcard-row"
