@@ -146,7 +146,7 @@ class CardUpdate(BaseModel):
     pdf_ref_line: int
     attachments: list[str] = []
 
-from app.services.generator import compute_card_hash
+from app.services.generator import generate_card_id
 
 @app.post("/api/cards")
 def create_card_manually(
@@ -154,7 +154,7 @@ def create_card_manually(
     images: list[UploadFile] = File([])
 ):
     """
-    Creates a new flashcard manually and packages it into <card_hash>.flash.
+    Creates a new flashcard manually and packages it into <card_id>.flash using a 128-char random ID.
     """
     try:
         data_dict = json.loads(card_data)
@@ -168,27 +168,20 @@ def create_card_manually(
             detail="A card can have at most exactly 1 tag."
         )
         
-    # Calculate hash
-    card_hash = compute_card_hash(card_data_parsed.question, card_data_parsed.answer, card_data_parsed.tags)
+    # Generate 128-character unique random ID
+    card_id = generate_card_id()
     created_at = datetime.utcnow().isoformat() + "Z"
     
     # Save target path
-    flash_filename = f"{card_hash}.flash"
+    flash_filename = f"{card_id}.flash"
     flash_path = settings.storage_path / flash_filename
     
-    # Check if already exists
-    if flash_path.exists():
-        raise HTTPException(
-            status_code=400,
-            detail="A flashcard with identical content already exists."
-        )
-        
     # Standardize attachments paths
     attachments = []
     
     # Build metadata.json
     metadata = {
-        "id": card_hash,
+        "id": card_id,
         "question": card_data_parsed.question,
         "created_at": created_at,
         "tags": card_data_parsed.tags,
@@ -201,7 +194,7 @@ def create_card_manually(
         os.makedirs(settings.storage_path, exist_ok=True)
         
         # Save uploaded images to a temp folder first to write to zip
-        temp_dir = settings.temp_path / f"new_{card_hash}"
+        temp_dir = settings.temp_path / f"new_{card_id}"
         temp_dir.mkdir(parents=True, exist_ok=True)
         
         for img in images:
@@ -226,16 +219,16 @@ def create_card_manually(
         # Auto-queue new card for sync to all connected mobile devices
         from app.routers.pairing import notify_listeners
         for dev_id in list(sync.device_sync_queues.keys()):
-            if card_hash not in sync.device_sync_queues[dev_id]:
-                sync.device_sync_queues[dev_id].append(card_hash)
+            if card_id not in sync.device_sync_queues[dev_id]:
+                sync.device_sync_queues[dev_id].append(card_id)
         notify_listeners()
 
-        logger.info(f"Manually created and packaged flashcard {card_hash}")
-        return {"status": "success", "card_hash": card_hash}
+        logger.info(f"Manually created and packaged flashcard {card_id}")
+        return {"status": "success", "card_hash": card_id}
     except Exception as e:
         logger.error(f"Failed to save manual flashcard: {e}")
         try:
-            temp_dir = settings.temp_path / f"new_{card_hash}"
+            temp_dir = settings.temp_path / f"new_{card_id}"
             if temp_dir.exists():
                 shutil.rmtree(temp_dir)
         except:
@@ -249,7 +242,8 @@ def update_card(
     images: list[UploadFile] = File([])
 ):
     """
-    Edits an existing flashcard. If content changes, deletes old file and packages into new hash.
+    Edits an existing flashcard in-place preserving its permanent 128-character ID.
+    Rewrites content.md, metadata.json, and assets inside {card_id}.flash.
     Auto-queues updated card for sync to connected phones.
     """
     try:
@@ -264,67 +258,65 @@ def update_card(
             detail="A card can have at most exactly 1 tag."
         )
         
-    old_flash_path = settings.storage_path / f"{card_hash}.flash"
-    if not old_flash_path.exists():
-        raise HTTPException(status_code=404, detail="Flashcard not found")
-        
-    # Calculate new hash
-    new_card_hash = compute_card_hash(card_data_parsed.question, card_data_parsed.answer, card_data_parsed.tags)
+    flash_path = settings.storage_path / f"{card_hash}.flash"
     
-    # Read existing metadata to preserve fields like created_at, attachments, etc.
+    existing_created_at = datetime.utcnow().isoformat() + "Z"
+    existing_source_pdf = card_data_parsed.source_pdf
+    temp_dir = settings.temp_path / f"edit_{card_hash}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Read existing zip assets and metadata if available
+    if flash_path.exists():
+        try:
+            with zipfile.ZipFile(flash_path, "r") as old_zip:
+                metadata_str = old_zip.read("metadata.json").decode("utf-8")
+                old_metadata = json.loads(metadata_str)
+                existing_created_at = old_metadata.get("created_at", existing_created_at)
+                existing_source_pdf = old_metadata.get("source_pdf", existing_source_pdf)
+                
+                # Extract any assets
+                for name in old_zip.namelist():
+                    if name.startswith("assets/"):
+                        old_zip.extract(name, temp_dir)
+        except Exception as zip_err:
+            logger.warning(f"Error reading existing card zip: {zip_err}")
+                
+    extracted_assets_dir = temp_dir / "assets"
+    active_attachments = []
+    if extracted_assets_dir.exists():
+        for asset_file in list(extracted_assets_dir.glob("*")):
+            rel_name = f"assets/{asset_file.name}"
+            if rel_name in card_data_parsed.attachments:
+                active_attachments.append(rel_name)
+            else:
+                os.remove(asset_file)
+                
+    # Save newly uploaded images
+    for img in images:
+        if img.filename:
+            extracted_assets_dir.mkdir(parents=True, exist_ok=True)
+            target_img_path = extracted_assets_dir / img.filename
+            with open(target_img_path, "wb") as buffer:
+                shutil.copyfileobj(img.file, buffer)
+            rel_name = f"assets/{img.filename}"
+            if rel_name not in active_attachments:
+                active_attachments.append(rel_name)
+                
+    # Build metadata.json using fixed card_hash ID
+    metadata = {
+        "id": card_hash,
+        "question": card_data_parsed.question,
+        "created_at": existing_created_at,
+        "tags": card_data_parsed.tags,
+        "source_pdf": existing_source_pdf,
+        "pdf_ref_line": card_data_parsed.pdf_ref_line,
+        "attachments": active_attachments
+    }
+    
     try:
-        existing_created_at = datetime.utcnow().isoformat() + "Z"
-        temp_dir = settings.temp_path / f"edit_{card_hash}"
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        
-        with zipfile.ZipFile(old_flash_path, "r") as old_zip:
-            metadata_str = old_zip.read("metadata.json").decode("utf-8")
-            old_metadata = json.loads(metadata_str)
-            existing_created_at = old_metadata.get("created_at", existing_created_at)
-            
-            # Extract any assets
-            for name in old_zip.namelist():
-                if name.startswith("assets/"):
-                    old_zip.extract(name, temp_dir)
-                    
-        # Filter temp assets: only keep the ones that are in card_data_parsed.attachments
-        extracted_assets_dir = temp_dir / "assets"
-        active_attachments = []
-        if extracted_assets_dir.exists():
-            for asset_file in list(extracted_assets_dir.glob("*")):
-                rel_name = f"assets/{asset_file.name}"
-                if rel_name in card_data_parsed.attachments:
-                    active_attachments.append(rel_name)
-                else:
-                    # User deleted this attachment
-                    os.remove(asset_file)
-                    
-        # Save newly uploaded images
-        for img in images:
-            if img.filename:
-                extracted_assets_dir.mkdir(parents=True, exist_ok=True)
-                target_img_path = extracted_assets_dir / img.filename
-                with open(target_img_path, "wb") as buffer:
-                    shutil.copyfileobj(img.file, buffer)
-                rel_name = f"assets/{img.filename}"
-                if rel_name not in active_attachments:
-                    active_attachments.append(rel_name)
-                    
-        # Build metadata.json
-        metadata = {
-            "id": new_card_hash,
-            "question": card_data_parsed.question,
-            "created_at": existing_created_at,
-            "tags": card_data_parsed.tags,
-            "source_pdf": card_data_parsed.source_pdf,
-            "pdf_ref_line": card_data_parsed.pdf_ref_line,
-            "attachments": active_attachments
-        }
-        
-        new_flash_path = settings.storage_path / f"{new_card_hash}.flash"
-        
-        # Package into new ZIP (or overwrite if same hash)
-        with zipfile.ZipFile(new_flash_path, "w", zipfile.ZIP_DEFLATED) as new_zip:
+        os.makedirs(settings.storage_path, exist_ok=True)
+        # Package into ZIP overwriting in-place
+        with zipfile.ZipFile(flash_path, "w", zipfile.ZIP_DEFLATED) as new_zip:
             new_zip.writestr("metadata.json", json.dumps(metadata, indent=2))
             new_zip.writestr("content.md", card_data_parsed.answer)
             
@@ -333,35 +325,24 @@ def update_card(
                 for asset_file in extracted_assets_dir.glob("*"):
                     new_zip.write(asset_file, arcname=f"assets/{asset_file.name}")
                     
-        # If hash changed, delete the old file & queue old_hash for pruning on connected phones
-        if new_card_hash != card_hash:
-            os.remove(old_flash_path)
-            logger.info(f"Content changed. Deleted old card {card_hash} and created new card {new_card_hash}")
-            for dev_id in list(sync.device_libraries.keys()):
-                if dev_id not in sync.device_sync_prunes:
-                    sync.device_sync_prunes[dev_id] = []
-                if card_hash not in sync.device_sync_prunes[dev_id]:
-                    sync.device_sync_prunes[dev_id].append(card_hash)
-        else:
-            logger.info(f"Overwrote card {card_hash}")
-            
+        logger.info(f"Overwrote flashcard {card_hash} in-place.")
+        
         # Clean up temp edit directory
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
 
-        # Auto-queue new/updated card hash to all active device sync queues
+        # Auto-queue updated card hash to all active device sync queues
         from app.routers.pairing import notify_listeners
         for dev_id in list(sync.device_sync_queues.keys()):
             if dev_id not in sync.device_sync_queues:
                 sync.device_sync_queues[dev_id] = []
-            if new_card_hash not in sync.device_sync_queues[dev_id]:
-                sync.device_sync_queues[dev_id].append(new_card_hash)
+            if card_hash not in sync.device_sync_queues[dev_id]:
+                sync.device_sync_queues[dev_id].append(card_hash)
         notify_listeners()
             
-        return {"status": "success", "card_hash": new_card_hash}
+        return {"status": "success", "card_hash": card_hash}
     except Exception as e:
         logger.error(f"Failed to edit flashcard: {e}")
-        # Clean up temp edit directory
         try:
             temp_dir = settings.temp_path / f"edit_{card_hash}"
             if temp_dir.exists():

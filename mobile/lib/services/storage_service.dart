@@ -147,6 +147,61 @@ class StorageService {
     return '';
   }
 
+  // Package a local card into a .flash ZIP archive for uploading to PC
+  Future<File?> createZipFromLocalCard(Flashcard card) async {
+    try {
+      final appDir = await getTemporaryDirectory();
+      final zipFilePath = join(appDir.path, '${card.id}.flash');
+      final zipFile = File(zipFilePath);
+      if (await zipFile.exists()) {
+        await zipFile.delete();
+      }
+
+      final archive = Archive();
+
+      // Write metadata.json
+      final metadata = {
+        "id": card.id,
+        "question": card.question,
+        "created_at": card.createdAt,
+        "tags": card.tags,
+        "source_pdf": card.sourcePdf,
+        "pdf_ref_line": card.pdfRefLine,
+        "attachments": card.attachments,
+      };
+      final metadataBytes = utf8.encode(jsonEncode(metadata));
+      archive.addFile(ArchiveFile('metadata.json', metadataBytes.length, metadataBytes));
+
+      // Write content.md
+      final contentStr = await getCardMarkdownContent(card);
+      final contentBytes = utf8.encode(contentStr);
+      archive.addFile(ArchiveFile('content.md', contentBytes.length, contentBytes));
+
+      // Write asset files inside assets/
+      final folder = Directory(card.folderPath);
+      if (await folder.exists()) {
+        await for (final entity in folder.list(recursive: true)) {
+          if (entity is File) {
+            final fname = basename(entity.path);
+            if (fname != 'metadata.json' && fname != 'content.md') {
+              final bytes = await entity.readAsBytes();
+              archive.addFile(ArchiveFile('assets/$fname', bytes.length, bytes));
+            }
+          }
+        }
+      }
+
+      final zipData = ZipEncoder().encode(archive);
+      if (zipData != null) {
+        await zipFile.writeAsBytes(zipData);
+        return zipFile;
+      }
+    } catch (e) {
+      print("Failed to create zip for card ${card.id}: $e");
+    }
+    return null;
+  }
+
   // Delete a card and its folder from disk
   Future<void> deleteCard(String id) async {
     final db = await database;

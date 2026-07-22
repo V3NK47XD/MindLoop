@@ -32,14 +32,14 @@ class FlashcardGen(BaseModel):
         description="The exact filenames of any diagrams or images on this page that are crucial to this flashcard. Must only be chosen from the provided 'Available Images' list. If none are needed, keep empty."
     )
 
+import secrets
+
 class FlashcardListGen(BaseModel):
     cards: list[FlashcardGen]
 
-def compute_card_hash(question: str, answer: str, tags: list[str]) -> str:
-    """Compute a unique stable SHA-256 hash for the flashcard contents."""
-    tag_str = ",".join(sorted(tags))
-    raw_content = f"{question.strip()}|{answer.strip()}|{tag_str}"
-    return hashlib.sha256(raw_content.encode("utf-8")).hexdigest()
+def generate_card_id() -> str:
+    """Generates a permanent unique random 128-character hex string ID for a flashcard."""
+    return secrets.token_hex(64)
 
 def package_flashcard(
     card_data: FlashcardGen,
@@ -48,13 +48,12 @@ def package_flashcard(
     output_dir: Path
 ) -> str:
     """
-    Packages a flashcard into a <card_hash>.flash zip file.
-    Returns the computed card hash.
+    Packages a flashcard into a <card_id>.flash zip file.
+    Returns the generated 128-character card ID.
     """
     os.makedirs(output_dir, exist_ok=True)
     
-    # Calculate hash
-    card_hash = compute_card_hash(card_data.question, card_data.answer, card_data.tags)
+    card_id = generate_card_id()
     created_at = datetime.utcnow().isoformat() + "Z"
     
     # Standardize attachments paths
@@ -64,7 +63,7 @@ def package_flashcard(
         
     # Build metadata.json
     metadata = {
-        "id": card_hash,
+        "id": card_id,
         "question": card_data.question,
         "created_at": created_at,
         "tags": card_data.tags,
@@ -74,7 +73,7 @@ def package_flashcard(
     }
     
     # Save target path
-    flash_filename = f"{card_hash}.flash"
+    flash_filename = f"{card_id}.flash"
     flash_path = output_dir / flash_filename
     
     with zipfile.ZipFile(flash_path, "w", zipfile.ZIP_DEFLATED) as zip_file:
@@ -92,8 +91,8 @@ def package_flashcard(
             else:
                 logger.warning(f"Attachment {attachment_name} specified by LLM but not found in temp images.")
                 
-    logger.info(f"Packaged flashcard {card_hash} into {flash_filename}")
-    return card_hash
+    logger.info(f"Packaged flashcard {card_id} into {flash_filename}")
+    return card_id
 
 def generate_flashcards_from_pdf(
     api_key: str,

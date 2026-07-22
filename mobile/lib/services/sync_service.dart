@@ -335,7 +335,29 @@ class SyncService extends ChangeNotifier {
         }),
       );
 
-      // Step B: Get pending sync transfers & prune queues
+      // Step B: Upload local phone cards missing on PC so PC has full .flash ZIPs with images
+      try {
+        final compareUri = Uri.parse("http://$_serverIp:$_serverPort/api/sync/device/$_deviceId/compare");
+        final compareResp = await http.get(compareUri);
+        if (compareResp.statusCode == 200) {
+          final Map<String, dynamic> compData = jsonDecode(compareResp.body);
+          final List<dynamic> phoneCards = compData['phone_cards'] ?? [];
+          for (var pcItem in phoneCards) {
+            if (pcItem['sync_status'] == 'only_phone') {
+              final cardId = pcItem['id'];
+              final localCard = await _storageService.getCardById(cardId);
+              if (localCard != null) {
+                print("Uploading local phone card $cardId zip to PC...");
+                await _uploadLocalCardZip(localCard);
+              }
+            }
+          }
+        }
+      } catch (uploadErr) {
+        print("Phone-only cards upload check error: $uploadErr");
+      }
+
+      // Step C: Get pending sync transfers & prune queues
       final pendingUri = Uri.parse("http://$_serverIp:$_serverPort/api/sync/device/$_deviceId/pending");
       final pendingResp = await http.get(pendingUri);
       
@@ -362,6 +384,27 @@ class SyncService extends ChangeNotifier {
     } finally {
       _isSyncing = false;
       notifyListeners();
+    }
+  }
+
+  // Upload a local phone card .flash ZIP to the PC server
+  Future<bool> _uploadLocalCardZip(Flashcard card) async {
+    try {
+      final zipFile = await _storageService.createZipFromLocalCard(card);
+      if (zipFile == null || !await zipFile.exists()) return false;
+
+      final uri = Uri.parse("http://$_serverIp:$_serverPort/api/sync/device/$_deviceId/upload_flash");
+      final request = http.MultipartRequest('POST', uri)
+        ..files.add(await http.MultipartFile.fromPath('file', zipFile.path, filename: '${card.id}.flash'));
+
+      final streamedResponse = await request.send();
+      final response = await http.Response.fromStream(streamedResponse);
+      
+      try { await zipFile.delete(); } catch (_) {}
+      return response.statusCode == 200;
+    } catch (e) {
+      print("Failed to upload card ${card.id} to PC: $e");
+      return false;
     }
   }
 

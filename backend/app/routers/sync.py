@@ -234,3 +234,30 @@ def confirm_sync_complete(device_id: str, card_hash: str, checksum: str = None):
     notify_listeners()
     
     return {"status": "success"}
+
+@router.post("/device/{device_id}/upload_flash")
+async def upload_flash_file(device_id: str, file: UploadFile = File(...)):
+    """Receives a .flash zip file uploaded from mobile phone and stores it on PC."""
+    try:
+        filename = file.filename
+        if filename.endswith(".flash"):
+            card_id = filename[:-6]
+        else:
+            card_id = filename
+            
+        target_path = settings.storage_path / f"{card_id}.flash"
+        
+        with open(target_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        logger.info(f"Uploaded flashcard {card_id}.flash from device {device_id}")
+        
+        if device_id not in device_libraries:
+            device_libraries[device_id] = set()
+        device_libraries[device_id].add(card_id)
+        
+        notify_listeners()
+        return {"status": "success", "card_id": card_id}
+    except Exception as e:
+        logger.error(f"Failed to upload flashcard from phone: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
