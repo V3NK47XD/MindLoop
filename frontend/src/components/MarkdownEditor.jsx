@@ -29,6 +29,8 @@ export const renderMarkdownHTML = (markdownText, getAttachmentUrl) => {
   let inCodeBlock = false;
   let codeBlockLang = '';
   let codeBlockBuffer = [];
+  let inMathBlock = false;
+  let mathBlockBuffer = [];
   let htmlLines = [];
   let inTable = false;
   let tableRows = [];
@@ -56,6 +58,24 @@ export const renderMarkdownHTML = (markdownText, getAttachmentUrl) => {
 
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i];
+
+    // Multi-line Math Block Accumulation
+    if (inMathBlock) {
+      const trimmed = line.trim();
+      if (trimmed === '$$' || (trimmed.endsWith('$$') && !trimmed.startsWith('$$'))) {
+        const lineContent = trimmed === '$$' ? '' : trimmed.slice(0, -2).trim();
+        if (lineContent) {
+          mathBlockBuffer.push(lineContent);
+        }
+        const fullMathExpr = mathBlockBuffer.join('\n');
+        htmlLines.push(`<div class="editor-math-block">${renderKatex(fullMathExpr, true)}</div>`);
+        inMathBlock = false;
+        mathBlockBuffer = [];
+      } else {
+        mathBlockBuffer.push(line);
+      }
+      continue;
+    }
 
     // Code Block Toggle
     if (line.trim().startsWith('```')) {
@@ -101,10 +121,18 @@ export const renderMarkdownHTML = (markdownText, getAttachmentUrl) => {
       flushTable();
     }
 
-    // Block Math $$ ... $$
-    if (line.trim().startsWith('$$') && line.trim().endsWith('$$') && line.trim().length > 2) {
-      let mathExpr = line.trim().slice(2, -2);
-      htmlLines.push(`<div class="editor-math-block">${renderKatex(mathExpr, true)}</div>`);
+    // Block Math $$ ... $$ (Single-line or Multi-line opening)
+    if (line.trim().startsWith('$$')) {
+      const trimmed = line.trim();
+      if (trimmed.endsWith('$$') && trimmed.length > 2) {
+        let mathExpr = trimmed.slice(2, -2).trim();
+        htmlLines.push(`<div class="editor-math-block">${renderKatex(mathExpr, true)}</div>`);
+      } else {
+        if (inTable) flushTable();
+        inMathBlock = true;
+        const initialContent = trimmed.slice(2).trim();
+        mathBlockBuffer = initialContent ? [initialContent] : [];
+      }
       continue;
     }
 
@@ -186,6 +214,10 @@ export const renderMarkdownHTML = (markdownText, getAttachmentUrl) => {
   }
 
   if (inTable) flushTable();
+  if (inMathBlock && mathBlockBuffer.length > 0) {
+    const fullMathExpr = mathBlockBuffer.join('\n');
+    htmlLines.push(`<div class="editor-math-block">${renderKatex(fullMathExpr, true)}</div>`);
+  }
 
   return htmlLines.join('');
 };
