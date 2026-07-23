@@ -302,13 +302,93 @@ class NotificationService {
     await prefs.setString('scheduled_slots', jsonEncode(scheduledSlotsData));
   }
 
-  // Helper to schedule a test notification after 5 seconds
-  Future<void> scheduleTestNotificationAfter5Seconds(String title, String body, String payload) async {
+  // Helper to schedule the next notification in rotation after a 5-second delay
+  Future<Flashcard?> scheduleNextNotificationAfter5Seconds() async {
+    final cards = await StorageService().getAllCards();
+    if (cards.isEmpty) return null;
+
+    final prefs = await SharedPreferences.getInstance();
+    List<String> shuffledTags = prefs.getStringList('shuffled_hashtags') ?? [];
+    List<String> completedTags = prefs.getStringList('completed_hashtags') ?? [];
+
+    final allHashtags = cards
+        .expand((c) => c.tags)
+        .map((t) => t.trim())
+        .where((t) => t.isNotEmpty)
+        .toSet()
+        .toList();
+    allHashtags.sort();
+
+    // Reconcile active tag set
+    final setA = allHashtags.toSet();
+    final setB = shuffledTags.toSet();
+    if (setA.length != setB.length || !setA.containsAll(setB)) {
+      shuffledTags = List<String>.from(allHashtags)..shuffle();
+      completedTags = [];
+      await prefs.setStringList('shuffled_hashtags', shuffledTags);
+      await prefs.setStringList('completed_hashtags', completedTags);
+    }
+
+    if (completedTags.length >= shuffledTags.length && shuffledTags.isNotEmpty) {
+      completedTags = [];
+      shuffledTags.shuffle();
+      await prefs.setStringList('shuffled_hashtags', shuffledTags);
+      await prefs.setStringList('completed_hashtags', completedTags);
+    }
+
+    // Determine active tag (first uncompleted tag)
+    String? activeTag;
+    for (final tag in shuffledTags) {
+      if (!completedTags.contains(tag)) {
+        activeTag = tag;
+        break;
+      }
+    }
+    if (activeTag == null && shuffledTags.isNotEmpty) {
+      activeTag = shuffledTags.first;
+    }
+
+    // Filter cards by active tag
+    List<Flashcard> tagCards = [];
+    if (activeTag != null) {
+      tagCards = cards.where((c) => c.tags.contains(activeTag)).toList();
+    }
+    if (tagCards.isEmpty) {
+      tagCards = cards;
+    }
+
+    // Sort by view count (unviewed first)
+    final countsRaw = prefs.getString('card_view_counts');
+    Map<String, int> counts = {};
+    if (countsRaw != null) {
+      try {
+        final Map<String, dynamic> decoded = jsonDecode(countsRaw);
+        decoded.forEach((key, val) {
+          if (val is int) counts[key] = val;
+        });
+      } catch (_) {}
+    }
+    tagCards.sort((a, b) {
+      final viewA = counts[a.id] ?? 0;
+      final viewB = counts[b.id] ?? 0;
+      return viewA.compareTo(viewB);
+    });
+
+    // Get current card index pointer
+    int currentIndex = prefs.getInt('next_notification_card_index') ?? 0;
+    final card = tagCards[currentIndex % tagCards.length];
+
+    // Increment pointer for next button tap
+    await prefs.setInt('next_notification_card_index', currentIndex + 1);
+
+    final title = activeTag != null ? 'MindLoop Review - #$activeTag' : 'MindLoop Review!';
     const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
-      'mindloop_test',
-      'Test Channel',
+      'mindloop_reminders',
+      'MindLoop Reminders',
+      channelDescription: 'Rotational hashtag flashcard alerts',
       importance: Importance.max,
       priority: Priority.max,
+      playSound: true,
       largeIcon: DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
     );
     const DarwinNotificationDetails iosDetails = DarwinNotificationDetails(
@@ -317,26 +397,27 @@ class NotificationService {
       presentSound: true,
     );
     const NotificationDetails details = NotificationDetails(android: androidDetails, iOS: iosDetails);
-    
+
     final scheduledTime = tz.TZDateTime.now(tz.local).add(const Duration(seconds: 5));
-    
+
     await _notificationsPlugin.zonedSchedule(
-      id: 999,
+      id: DateTime.now().millisecondsSinceEpoch % 100000,
       title: title,
-      body: body,
+      body: card.question,
       scheduledDate: scheduledTime,
       notificationDetails: details,
       androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-      payload: payload,
+      payload: card.id,
     );
-    
-    // Log test notification in history
+
+    // Log notification in history
     await StorageService().logNotification(
-      payload,
+      card.id,
       title,
-      body,
+      card.question,
       scheduledTime,
     );
-    print("Scheduled test notification to fire in 5 seconds at: $scheduledTime");
+    print("Scheduled next notification (#${activeTag ?? ''} - ${card.question}) to fire in 5 seconds at: $scheduledTime");
+    return card;
   }
 }

@@ -131,6 +131,15 @@ class _NotificationsViewState extends State<NotificationsView> {
     await _loadSettingsAndChecklist();
   }
 
+  String? get _activeTag {
+    for (final tag in _shuffledTags) {
+      if (!_completedTags.contains(tag)) {
+        return tag;
+      }
+    }
+    return _shuffledTags.isNotEmpty ? _shuffledTags.first : null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -138,6 +147,8 @@ class _NotificationsViewState extends State<NotificationsView> {
     final panelBg = isDark ? const Color(0xFF111827) : Colors.white;
     final borderColor = isDark ? Colors.white : Colors.black;
     final shadowColor = isDark ? Colors.white.withOpacity(0.1) : Colors.black.withOpacity(0.15);
+
+    final activeTag = _activeTag;
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -314,12 +325,58 @@ class _NotificationsViewState extends State<NotificationsView> {
                                   minHeight: 8,
                                 ),
                               ),
+                              if (activeTag != null) ...[
+                                const SizedBox(height: 14),
+                                Container(
+                                  width: double.infinity,
+                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                  decoration: BoxDecoration(
+                                    color: isDark ? Colors.cyan.withOpacity(0.15) : const Color(0xFF06B6D4).withOpacity(0.12),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(
+                                      color: isDark ? Colors.cyan : const Color(0xFF06B6D4),
+                                      width: 2.0,
+                                    ),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      const Icon(Icons.notifications_active_rounded, color: Colors.cyan, size: 20),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        'NEXT NOTIFICATION TAG:',
+                                        style: TextStyle(
+                                          color: textColor.withOpacity(0.7),
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                        decoration: BoxDecoration(
+                                          color: isDark ? Colors.cyan : const Color(0xFF06B6D4),
+                                          borderRadius: BorderRadius.circular(4),
+                                        ),
+                                        child: Text(
+                                          '#$activeTag',
+                                          style: const TextStyle(
+                                            color: Colors.black,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w900,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
                               const SizedBox(height: 16),
                               Wrap(
                                 spacing: 8,
                                 runSpacing: 8,
                                 children: _shuffledTags.map((tag) {
                                   final isCompleted = _completedTags.contains(tag);
+                                  final isActive = tag == activeTag && !isCompleted;
                                   return InkWell(
                                     onTap: () => _toggleTagCompletion(tag, !isCompleted),
                                     borderRadius: BorderRadius.circular(4),
@@ -328,11 +385,15 @@ class _NotificationsViewState extends State<NotificationsView> {
                                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                                       decoration: BoxDecoration(
                                         color: isCompleted 
-                                            ? Colors.green.withOpacity(0.15) 
-                                            : panelBg,
+                                            ? Colors.green.withOpacity(0.15)
+                                            : (isActive
+                                                ? (isDark ? Colors.cyan.withOpacity(0.15) : const Color(0xFF06B6D4).withOpacity(0.15))
+                                                : panelBg),
                                         borderRadius: BorderRadius.circular(4),
                                         border: Border.all(
-                                          color: isCompleted ? Colors.green : borderColor,
+                                          color: isCompleted 
+                                              ? Colors.green 
+                                              : (isActive ? (isDark ? Colors.cyan : const Color(0xFF06B6D4)) : borderColor),
                                           width: 2.0,
                                         ),
                                       ),
@@ -343,19 +404,34 @@ class _NotificationsViewState extends State<NotificationsView> {
                                             isCompleted 
                                                 ? Icons.check_box 
                                                 : Icons.check_box_outline_blank,
-                                            color: isCompleted ? Colors.green : textColor.withOpacity(0.6),
+                                            color: isCompleted 
+                                                ? Colors.green 
+                                                : (isActive ? Colors.cyan : textColor.withOpacity(0.6)),
                                             size: 16,
                                           ),
                                           const SizedBox(width: 6),
                                           Text(
                                             '#$tag',
                                             style: TextStyle(
-                                              color: isCompleted ? Colors.green : textColor,
+                                              color: isCompleted 
+                                                  ? Colors.green 
+                                                  : (isActive ? (isDark ? Colors.cyan : const Color(0xFF0891B2)) : textColor),
                                               fontSize: 12,
                                               fontWeight: FontWeight.w900,
                                               decoration: isCompleted ? TextDecoration.lineThrough : null,
                                             ),
                                           ),
+                                          if (isActive) ...[
+                                            const SizedBox(width: 4),
+                                            Text(
+                                              '(NEXT)',
+                                              style: TextStyle(
+                                                color: isDark ? Colors.cyan : const Color(0xFF0891B2),
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.w900,
+                                              ),
+                                            ),
+                                          ],
                                         ],
                                       ),
                                     ),
@@ -368,7 +444,7 @@ class _NotificationsViewState extends State<NotificationsView> {
                         const SizedBox(height: 20),
                       ],
 
-                      // Test Notification Action Card
+                      // Next Notification Action Card
                       Container(
                         width: double.infinity,
                         padding: const EdgeInsets.all(18),
@@ -384,22 +460,22 @@ class _NotificationsViewState extends State<NotificationsView> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'TEST NOTIFICATIONS',
+                              'NEXT NOTIFICATION TRIGGER',
                               style: TextStyle(color: textColor, fontSize: 14, fontWeight: FontWeight.w900),
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              'Trigger a test reminder banner right now to check layout contrast and system alerts.',
-                              style: TextStyle(color: isDark ? Colors.grey[400] : Colors.grey[700], fontSize: 11),
+                              'Instantly triggers the next scheduled notification in the active rotation after a 5-second delay. Subsequent taps cycle through the remaining cards.',
+                              style: TextStyle(color: isDark ? Colors.grey[400] : Colors.grey[700], fontSize: 11, height: 1.4),
                             ),
                             const SizedBox(height: 16),
                             SizedBox(
                               width: double.infinity,
                               height: 46,
                               child: ElevatedButton.icon(
-                                icon: Icon(Icons.notifications_active_outlined, color: textColor),
+                                icon: Icon(Icons.send_rounded, color: textColor),
                                 label: Text(
-                                  'SEND TEST ALERT',
+                                  'SEND NEXT NOTIFICATION',
                                   style: TextStyle(color: textColor, fontWeight: FontWeight.w900, fontSize: 13),
                                 ),
                                 style: ElevatedButton.styleFrom(
@@ -409,26 +485,21 @@ class _NotificationsViewState extends State<NotificationsView> {
                                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                                 ),
                                 onPressed: () async {
-                                  final cards = await StorageService().getAllCards();
-                                  if (cards.isEmpty) {
+                                  final card = await _notificationService.scheduleNextNotificationAfter5Seconds();
+                                  if (card == null) {
                                     if (mounted) {
                                       ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(content: Text('Please sync some flashcards first to run a test.')),
+                                        const SnackBar(content: Text('Please sync or create flashcards first.')),
                                       );
                                     }
                                     return;
                                   }
-                                  final firstCard = cards.first;
-                                  await _notificationService.scheduleTestNotificationAfter5Seconds(
-                                    'MindLoop Review!',
-                                    firstCard.question,
-                                    firstCard.id,
-                                  );
                                   if (mounted) {
+                                    final tagLabel = card.tags.isNotEmpty ? '#${card.tags.first}' : '';
                                     ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                        content: Text('Test notification scheduled! Close the app now to test background delivery. Firing in 5s...'),
-                                        duration: Duration(seconds: 4),
+                                      SnackBar(
+                                        content: Text('Next notification ($tagLabel) scheduled! Firing in 5 seconds...'),
+                                        duration: const Duration(seconds: 4),
                                       ),
                                     );
                                   }
