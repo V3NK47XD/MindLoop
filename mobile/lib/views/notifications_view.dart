@@ -123,11 +123,14 @@ class _NotificationsViewState extends State<NotificationsView> {
   }
 
   String? get _activeTag {
+    // activeTags = uncompleted tags in rotation order
     final active = _shuffledTags.where((t) => !_completedTags.contains(t)).toList();
     if (active.isEmpty && _shuffledTags.isNotEmpty) {
+      // All tags completed — cycle from shuffled list
       return _shuffledTags[_globalStepPointer % _shuffledTags.length];
     }
     if (active.isEmpty) return null;
+    // The global pointer selects which active tag is NEXT
     return active[_globalStepPointer % active.length];
   }
 
@@ -368,10 +371,15 @@ class _NotificationsViewState extends State<NotificationsView> {
                                 children: _shuffledTags.map((tag) {
                                   final isCompleted = _completedTags.contains(tag);
                                   final isActive = tag == activeTag && !isCompleted;
-                                  final tagCards = _cards.where((c) => c.tags.any((t) => t.trim().toLowerCase() == tag.trim().toLowerCase())).toList();
+                                  // Normalize tag for matching — handles trimming/case from SQLite stored tags
+                                  final normalizedTag = tag.trim().toLowerCase();
+                                  final tagCards = _cards.where((c) =>
+                                    c.tags.any((t) => t.trim().toLowerCase() == normalizedTag)
+                                  ).toList();
                                   final totalCount = tagCards.length;
                                   final viewedCount = tagCards.where((c) => (_cardViewCounts[c.id] ?? 0) > 0).length;
-                                  final remainingCount = totalCount > viewedCount ? totalCount - viewedCount : 0;
+                                  // remainingCount = cards not yet flipped/viewed in the app
+                                  final remainingCount = (totalCount - viewedCount).clamp(0, totalCount);
 
                                   return InkWell(
                                     onTap: () => _toggleTagCompletion(tag, !isCompleted),

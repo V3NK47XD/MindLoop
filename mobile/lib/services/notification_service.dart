@@ -68,19 +68,32 @@ class NotificationService {
     await androidPlugin?.requestExactAlarmsPermission();
   }
 
-  // Helper to check if all cards under a tag have been viewed
-  Future<bool> _isTagFullyViewed(String tag, List<Flashcard> cards) async {
+  // Normalize a tag string for consistent comparison
+  static String _normalizeTag(String tag) => tag.trim().toLowerCase();
+
+  // Get cards matching a tag (case-insensitive, trimmed)
+  static List<Flashcard> _cardsForTag(List<Flashcard> cards, String tag) {
+    final normalizedTag = _normalizeTag(tag);
+    return cards.where((c) => c.tags.any((t) => _normalizeTag(t) == normalizedTag)).toList();
+  }
+
+  // Read per-tag card pointer map from SharedPreferences
+  // Key: 'tag_card_pointers' → JSON map of { "tagName": cardIndex }
+  Future<Map<String, int>> _loadTagCardPointers() async {
     final prefs = await SharedPreferences.getInstance();
-    final countsRaw = prefs.getString('card_view_counts');
-    if (countsRaw == null) return false;
+    final raw = prefs.getString('tag_card_pointers');
+    if (raw == null) return {};
     try {
-      final Map<String, dynamic> counts = jsonDecode(countsRaw);
-      final tagCards = cards.where((c) => c.tags.contains(tag)).toList();
-      if (tagCards.isEmpty) return true;
-      return tagCards.every((c) => (counts[c.id] ?? 0) > 0);
+      final Map<String, dynamic> decoded = jsonDecode(raw);
+      return decoded.map((k, v) => MapEntry(k, v as int));
     } catch (_) {
-      return false;
+      return {};
     }
+  }
+
+  Future<void> _saveTagCardPointers(Map<String, int> pointers) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('tag_card_pointers', jsonEncode(pointers));
   }
 
   // Read background alert schedule history and synchronize the checklist progression
@@ -111,17 +124,20 @@ class NotificationService {
     List<String> shuffledTags = prefs.getStringList('shuffled_hashtags') ?? [];
     List<String> completedTags = prefs.getStringList('completed_hashtags') ?? [];
 
-    // Reconcile tag set
-    final setA = allHashtags.toSet();
-    final setB = shuffledTags.toSet();
+    // Reconcile tag set — normalize both sets for comparison
+    final setA = allHashtags.map(_normalizeTag).toSet();
+    final setB = shuffledTags.map(_normalizeTag).toSet();
     if (setA.length != setB.length || !setA.containsAll(setB)) {
       shuffledTags = List<String>.from(allHashtags)..shuffle();
       completedTags = [];
+      // Reset all card pointers when tag set changes
+      await _saveTagCardPointers({});
+      await prefs.setInt('global_rotation_step_pointer', 0);
     }
 
     // Auto-mark tags as completed if all their cards have view_count > 0
     for (final tag in shuffledTags) {
-      final tagCards = cards.where((c) => c.tags.any((t) => t.trim().toLowerCase() == tag.trim().toLowerCase())).toList();
+      final tagCards = _cardsForTag(cards, tag);
       if (tagCards.isNotEmpty && tagCards.every((c) => (counts[c.id] ?? 0) > 0)) {
         if (!completedTags.contains(tag)) {
           completedTags.add(tag);
@@ -133,6 +149,8 @@ class NotificationService {
     if (completedTags.length >= shuffledTags.length && shuffledTags.isNotEmpty) {
       completedTags = [];
       shuffledTags.shuffle();
+      await _saveTagCardPointers({});
+      await prefs.setInt('global_rotation_step_pointer', 0);
     }
 
     await prefs.setStringList('shuffled_hashtags', shuffledTags);
@@ -236,14 +254,15 @@ class NotificationService {
     print("Scheduling next $slotsCount reminders, every $frequencyHours hours... (Active Tags: $activeTags)");
 
     List<Map<String, dynamic>> scheduledSlotsData = [];
+    // Per-tag sequential card pointers (independent of view counts)
     Map<String, int> tagPointers = {};
 
     for (int slotIndex = 1; slotIndex <= slotsCount; slotIndex++) {
       // Pick active tag in rotation
       final tag = activeTags[(slotIndex - 1) % activeTags.length];
 
-      // Get cards for tag, sorted by view count (unviewed first), then by card ID
-      final tagCards = cards.where((c) => c.tags.any((t) => t.trim().toLowerCase() == tag.trim().toLowerCase())).toList();
+      // Get cards for tag, sorted: unviewed first, then by ID
+      final tagCards = _cardsForTag(cards, tag);
       tagCards.sort((a, b) {
         final viewA = counts[a.id] ?? 0;
         final viewB = counts[b.id] ?? 0;
@@ -253,6 +272,7 @@ class NotificationService {
 
       if (tagCards.isEmpty) continue;
 
+      // Advance per-tag pointer sequentially
       final ptr = tagPointers[tag] ?? 0;
       final card = tagCards[ptr % tagCards.length];
       tagPointers[tag] = ptr + 1;
@@ -290,7 +310,9 @@ class NotificationService {
     await prefs.setString('scheduled_slots', jsonEncode(scheduledSlotsData));
   }
 
-  // Helper to schedule the next notification in rotation after a 5-second delay
+  // Helper to schedule the next notification in rotation after a 5-second delay.
+  // Uses global_rotation_step_pointer to rotate through tags, and
+  // tag_card_pointers to advance through cards within each tag independently.
   Future<Flashcard?> scheduleNextNotificationAfter5Seconds() async {
     await updateNotificationProgress();
 
@@ -306,42 +328,39 @@ class NotificationService {
       completedTags = [];
       activeTags = List<String>.from(shuffledTags);
       await prefs.setStringList('completed_hashtags', completedTags);
+      // Reset card pointers when cycling back
+      await _saveTagCardPointers({});
+      await prefs.setInt('global_rotation_step_pointer', 0);
     }
     if (activeTags.isEmpty) return null;
 
-    // Get current global rotation step pointer
+    // Read the global tag rotation pointer
     int stepPointer = prefs.getInt('global_rotation_step_pointer') ?? 0;
 
-    // Pick tag from activeTags rotationally
+    // Pick current tag from activeTags in rotation
     final tag = activeTags[stepPointer % activeTags.length];
 
-    // Load view counts
-    final countsRaw = prefs.getString('card_view_counts');
-    Map<String, int> counts = {};
-    if (countsRaw != null) {
-      try {
-        final Map<String, dynamic> decoded = jsonDecode(countsRaw);
-        decoded.forEach((key, val) {
-          if (val is int) counts[key] = val;
-        });
-      } catch (_) {}
+    // Get all cards for this tag, sorted by ID (stable, deterministic order)
+    // We do NOT sort by view count here — this button always cycles through all cards sequentially
+    final tagCards = _cardsForTag(cards, tag);
+    tagCards.sort((a, b) => a.id.compareTo(b.id));
+
+    if (tagCards.isEmpty) {
+      // Skip this tag and advance pointer
+      await prefs.setInt('global_rotation_step_pointer', stepPointer + 1);
+      return null;
     }
 
-    // Get cards for tag, unviewed first, then by ID
-    final tagCards = cards.where((c) => c.tags.any((t) => t.trim().toLowerCase() == tag.trim().toLowerCase())).toList();
-    tagCards.sort((a, b) {
-      final viewA = counts[a.id] ?? 0;
-      final viewB = counts[b.id] ?? 0;
-      if (viewA != viewB) return viewA.compareTo(viewB);
-      return a.id.compareTo(b.id);
-    });
+    // Read per-tag card pointer — this independently tracks which card to send next per tag
+    final tagPointers = await _loadTagCardPointers();
+    final cardPtr = tagPointers[tag] ?? 0;
+    final card = tagCards[cardPtr % tagCards.length];
 
-    final cardPointer = (stepPointer ~/ activeTags.length);
-    final card = tagCards.isNotEmpty
-        ? tagCards[cardPointer % tagCards.length]
-        : cards[stepPointer % cards.length];
+    // Advance the per-tag card pointer for next time this tag is hit
+    tagPointers[tag] = cardPtr + 1;
+    await _saveTagCardPointers(tagPointers);
 
-    // Increment global step pointer for next tap
+    // Advance global tag rotation pointer for next button press
     await prefs.setInt('global_rotation_step_pointer', stepPointer + 1);
 
     final title = 'MindLoop Review - #$tag';
@@ -380,7 +399,7 @@ class NotificationService {
       card.question,
       scheduledTime,
     );
-    print("Scheduled next notification (#$tag - ${card.question}) to fire in 5 seconds at: $scheduledTime");
+    print("Scheduled next notification (#$tag card[$cardPtr] - ${card.question}) to fire in 5 seconds at: $scheduledTime");
     return card;
   }
 }

@@ -46,14 +46,21 @@ class Flashcard {
   }
 
   factory Flashcard.fromMap(Map<String, dynamic> map) {
+    // Trim each tag and attachment to remove whitespace artifacts from SQLite storage
+    final tagsStr = map['tags'] as String? ?? '';
+    final attachmentsStr = map['attachments'] as String? ?? '';
     return Flashcard(
       id: map['id'] as String,
       question: map['question'] as String,
       createdAt: map['created_at'] as String,
-      tags: (map['tags'] as String).isEmpty ? [] : (map['tags'] as String).split(','),
+      tags: tagsStr.isEmpty
+          ? []
+          : tagsStr.split(',').map((t) => t.trim()).where((t) => t.isNotEmpty).toList(),
       sourcePdf: map['source_pdf'] as String? ?? '',
       pdfRefLine: map['pdf_ref_line'] as int? ?? 0,
-      attachments: (map['attachments'] as String).isEmpty ? [] : (map['attachments'] as String).split(','),
+      attachments: attachmentsStr.isEmpty
+          ? []
+          : attachmentsStr.split(',').map((t) => t.trim()).where((t) => t.isNotEmpty).toList(),
       folderPath: map['folder_path'] as String,
     );
   }
