@@ -124,6 +124,7 @@ class NotificationService {
         if (!completedTags.contains(tag)) {
           completedTags.add(tag);
         }
+        await StorageService().markScheduledNotificationsForTagSent(tag);
       }
     }
 
@@ -132,6 +133,7 @@ class NotificationService {
       completedTags = [];
       shuffledTags.shuffle();
       await prefs.setInt('global_rotation_step_pointer', 0);
+      await rescheduleReminders(prefs.getInt('notification_frequency') ?? 3, forceReset: true);
     }
 
     await prefs.setStringList('shuffled_hashtags', shuffledTags);
@@ -155,16 +157,6 @@ class NotificationService {
 
         // Log into notifications_history
         await StorageService().logNotification(cardId, title, body, scheduledTime);
-      }
-    }
-
-    // Check if entire cycle is complete (0 pending remaining) -> Auto renew schedule!
-    final remainingCount = await StorageService().getPendingScheduledNotificationsCount();
-    if (remainingCount == 0 && cards.isNotEmpty) {
-      final frequencyHours = prefs.getInt('notification_frequency') ?? 3;
-      if (frequencyHours > 0) {
-        print("Scheduled notifications queue exhausted. Auto-renewing cycle schedule...");
-        await rescheduleReminders(frequencyHours, forceReset: true);
       }
     }
   }
@@ -338,10 +330,10 @@ class NotificationService {
     // Fetch the single next pending notification from SQLite table pointer
     Map<String, dynamic>? nextItem = await StorageService().getNextPendingScheduledNotification();
 
-    // If queue is empty, auto-renew cycle and fetch again
+    // If queue is empty (all items in current cycle sent), auto-renew cycle and fetch again
     if (nextItem == null) {
       print("No pending scheduled notifications in SQLite. Generating new cycle...");
-      await rescheduleReminders(frequencyHours > 0 ? frequencyHours : 3);
+      await rescheduleReminders(frequencyHours > 0 ? frequencyHours : 3, forceReset: true);
       nextItem = await StorageService().getNextPendingScheduledNotification();
     }
 
@@ -396,12 +388,6 @@ class NotificationService {
     // 5. Update global rotation step pointer for UI NEXT tag sync
     int stepPointer = prefs.getInt('global_rotation_step_pointer') ?? 0;
     await prefs.setInt('global_rotation_step_pointer', stepPointer + 1);
-
-    // 6. If queue is now empty, renew schedule for next cycle
-    final remainingCount = await StorageService().getPendingScheduledNotificationsCount();
-    if (remainingCount == 0 && frequencyHours > 0) {
-      await rescheduleReminders(frequencyHours, forceReset: true);
-    }
 
     print("Next notification sent from SQLite queue (Row #$rowId | Tag #$tag | Card: $cardId). Firing in 5s!");
     return await StorageService().getCardById(cardId);

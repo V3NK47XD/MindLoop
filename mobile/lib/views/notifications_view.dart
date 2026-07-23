@@ -116,23 +116,23 @@ class _NotificationsViewState extends State<NotificationsView> {
       if (!completed.contains(tag)) {
         completed.add(tag);
       }
+      // Update scheduled_notifications in SQLite: mark all pending items for this tag as 'sent'!
+      await StorageService().markScheduledNotificationsForTagSent(tag);
     } else {
       completed.remove(tag);
+      // Reset scheduled_notifications in SQLite for this tag back to 'pending'!
+      await StorageService().markScheduledNotificationsForTagPending(tag);
     }
 
     if (completed.length >= shuffled.length && shuffled.isNotEmpty) {
       completed = [];
       shuffled.shuffle();
       await prefs.setStringList('shuffled_hashtags', shuffled);
+      await _notificationService.rescheduleReminders(_frequencyHours, forceReset: true);
+    } else {
+      await prefs.setStringList('completed_hashtags', completed);
     }
 
-    await prefs.setStringList('completed_hashtags', completed);
-    setState(() {
-      _shuffledTags = shuffled;
-      _completedTags = completed;
-    });
-
-    await _notificationService.rescheduleReminders(_frequencyHours);
     await _loadSettingsAndChecklist();
   }
 

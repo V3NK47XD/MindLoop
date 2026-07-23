@@ -442,4 +442,22 @@ class StorageService {
     );
     return Sqflite.firstIntValue(result) ?? 0;
   }
+
+  // Mark all pending scheduled notifications for a tag as 'sent'
+  Future<void> markScheduledNotificationsForTagSent(String tag) async {
+    final db = await database;
+    await db.rawUpdate(
+      "UPDATE scheduled_notifications SET status = 'sent' WHERE LOWER(TRIM(tag)) = LOWER(TRIM(?)) AND status = 'pending'",
+      [tag],
+    );
+  }
+
+  // Reset sent scheduled notifications for a tag back to 'pending'
+  Future<void> markScheduledNotificationsForTagPending(String tag) async {
+    final db = await database;
+    await db.rawUpdate(
+      "UPDATE scheduled_notifications SET status = 'pending' WHERE LOWER(TRIM(tag)) = LOWER(TRIM(?))",
+      [tag],
+    );
+  }
 }
