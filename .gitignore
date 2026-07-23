@@ -10,7 +10,7 @@
 Thumbs.db
 *.log
 
-# Backend (Python/FastAPI)
+# Backend (Python/FastAPI & PyInstaller)
 backend/venv/
 backend/__pycache__/
 backend/**/*.pyc
@@ -19,6 +19,9 @@ backend/**/*.pyd
 backend/.pytest_cache/
 backend/.env
 backend/storage/
+dist/
+build/
+*.spec
 
 # Frontend (React/Vite)
 frontend/node_modules/

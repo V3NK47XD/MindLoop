@@ -1,10 +1,13 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_math_fork/flutter_math.dart';
 import 'package:path/path.dart' as p;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:mobile/models/flashcard.dart';
 import 'package:mobile/services/storage_service.dart';
+import 'package:mobile/services/notification_service.dart';
 import 'package:mobile/widgets/paper_background.dart';
 
 class CardView extends StatefulWidget {
@@ -20,6 +23,7 @@ class _CardViewState extends State<CardView> {
   bool _revealed = false;
   String _markdownContent = '';
   bool _isLoading = true;
+  int _viewCount = 0;
 
   @override
   void initState() {
@@ -30,9 +34,20 @@ class _CardViewState extends State<CardView> {
   Future<void> _loadContent() async {
     try {
       final content = await StorageService().getCardMarkdownContent(widget.card);
+      final prefs = await SharedPreferences.getInstance();
+      final countsRaw = prefs.getString('card_view_counts');
+      int count = 0;
+      if (countsRaw != null) {
+        try {
+          final Map<String, dynamic> counts = jsonDecode(countsRaw);
+          count = counts[widget.card.id] as int? ?? 0;
+        } catch (_) {}
+      }
+
       if (mounted) {
         setState(() {
           _markdownContent = content;
+          _viewCount = count;
           _isLoading = false;
         });
       }
@@ -45,6 +60,39 @@ class _CardViewState extends State<CardView> {
         });
       }
     }
+  }
+
+  Future<void> _incrementViewCount() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final countsRaw = prefs.getString('card_view_counts');
+      Map<String, dynamic> counts = {};
+      if (countsRaw != null) {
+        try {
+          counts = jsonDecode(countsRaw);
+        } catch (_) {}
+      }
+
+      final currentCount = counts[widget.card.id] as int? ?? 0;
+      counts[widget.card.id] = currentCount + 1;
+
+      await prefs.setString('card_view_counts', jsonEncode(counts));
+
+      // Update notification progress after viewing a card
+      await NotificationService().updateNotificationProgress();
+    } catch (e) {
+      print("Error saving view count: $e");
+    }
+  }
+
+  void _toggleReveal() {
+    setState(() {
+      _revealed = !_revealed;
+      if (_revealed) {
+        _viewCount++;
+        _incrementViewCount();
+      }
+    });
   }
 
   List<Widget> _parseMarkdownWithMath(String text, String folderPath, Color textColor) {
@@ -202,7 +250,7 @@ class _CardViewState extends State<CardView> {
               // Center card container
               Center(
                 child: GestureDetector(
-                  onTap: () => setState(() => _revealed = !_revealed),
+                  onTap: _toggleReveal,
                   child: Container(
                     width: cardWidth,
                     height: cardHeight,
@@ -295,18 +343,40 @@ class _CardViewState extends State<CardView> {
             spacing: 8,
             runSpacing: 8,
             alignment: WrapAlignment.center,
-            children: widget.card.tags.map((tag) => Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                color: panelBg,
-                borderRadius: BorderRadius.circular(4),
-                border: Border.all(color: borderColor, width: 2.0),
-              ),
-              child: Text(
-                '#$tag',
-                style: TextStyle(color: textColor, fontSize: 11, fontWeight: FontWeight.w900),
-              ),
-            )).toList(),
+            children: [
+              ...widget.card.tags.map((tag) => Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: panelBg,
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: borderColor, width: 2.0),
+                ),
+                child: Text(
+                  '#$tag',
+                  style: TextStyle(color: textColor, fontSize: 11, fontWeight: FontWeight.w900),
+                ),
+              )).toList(),
+              if (_viewCount > 0)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: borderColor, width: 2.0),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.remove_red_eye_outlined, size: 13, color: textColor),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Revealed: $_viewCount',
+                        style: TextStyle(color: textColor, fontSize: 11, fontWeight: FontWeight.w900),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
           ),
         ],
       ),
@@ -325,14 +395,41 @@ class _CardViewState extends State<CardView> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Icon(Icons.check_circle_outline, color: Colors.green, size: 20),
-                    const SizedBox(width: 8),
                     Expanded(
-                      child: Text(
-                        'Ref: ${widget.card.sourcePdf} (Page ${widget.card.pdfRefLine})',
-                        style: TextStyle(color: textColor.withOpacity(0.6), fontSize: 11, fontWeight: FontWeight.bold),
-                        overflow: TextOverflow.ellipsis,
+                      child: Row(
+                        children: [
+                          const Icon(Icons.check_circle_outline, color: Colors.green, size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Ref: ${widget.card.sourcePdf} (Page ${widget.card.pdfRefLine})',
+                              style: TextStyle(color: textColor.withOpacity(0.6), fontSize: 11, fontWeight: FontWeight.bold),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: borderColor, width: 1.5),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.remove_red_eye_outlined, size: 12, color: textColor),
+                          const SizedBox(width: 4),
+                          Text(
+                            '$_viewCount',
+                            style: TextStyle(color: textColor, fontSize: 10, fontWeight: FontWeight.w900),
+                          ),
+                        ],
                       ),
                     ),
                   ],

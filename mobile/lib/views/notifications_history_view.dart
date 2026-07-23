@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:mobile/services/notification_service.dart';
 import 'package:mobile/services/storage_service.dart';
 import 'package:mobile/views/card_view.dart';
 import 'package:mobile/widgets/paper_background.dart';
@@ -7,20 +8,35 @@ class NotificationsHistoryView extends StatefulWidget {
   const NotificationsHistoryView({super.key});
 
   @override
-  State<NotificationsHistoryView> createState() => _NotificationsHistoryViewState();
+  State<NotificationsHistoryView> createState() => NotificationsHistoryViewState();
 }
 
-class _NotificationsHistoryViewState extends State<NotificationsHistoryView> {
+class NotificationsHistoryViewState extends State<NotificationsHistoryView> with WidgetsBindingObserver {
   List<Map<String, dynamic>> _history = [];
   bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    _loadHistory();
+    WidgetsBinding.instance.addObserver(this);
+    refreshHistory();
   }
 
-  Future<void> _loadHistory() async {
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      refreshHistory();
+    }
+  }
+
+  Future<void> refreshHistory() async {
+    await NotificationService().updateNotificationProgress();
     final data = await StorageService().getNotificationHistory();
     if (mounted) {
       setState(() {
@@ -49,7 +65,7 @@ class _NotificationsHistoryViewState extends State<NotificationsHistoryView> {
 
     if (confirmed == true) {
       await StorageService().clearNotificationHistory();
-      _loadHistory();
+      refreshHistory();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Notification logs cleared.')),
@@ -129,7 +145,7 @@ class _NotificationsHistoryViewState extends State<NotificationsHistoryView> {
             ? Center(child: CircularProgressIndicator(color: borderColor))
             : SafeArea(
                 child: RefreshIndicator(
-                  onRefresh: _loadHistory,
+                  onRefresh: refreshHistory,
                   color: borderColor,
                   child: _history.isEmpty
                       ? ListView(

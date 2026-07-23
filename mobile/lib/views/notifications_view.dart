@@ -1,8 +1,11 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:mobile/models/flashcard.dart';
 import 'package:mobile/services/notification_service.dart';
 import 'package:mobile/services/storage_service.dart';
 import 'package:mobile/widgets/paper_background.dart';
+import 'package:mobile/views/scheduled_notifications_view.dart';
 import 'package:mobile/main.dart'; // To access themeNotifier
 
 class NotificationsView extends StatefulWidget {
@@ -17,6 +20,9 @@ class _NotificationsViewState extends State<NotificationsView> {
   int _frequencyHours = 3; // Default every 3 hours
   List<String> _shuffledTags = [];
   List<String> _completedTags = [];
+  List<Flashcard> _cards = [];
+  Map<String, int> _cardViewCounts = {};
+  int _globalStepPointer = 0;
   bool _isLoading = true;
   String _themeModeStr = 'light';
 
@@ -32,11 +38,41 @@ class _NotificationsViewState extends State<NotificationsView> {
 
     // 2. Load settings from SharedPreferences
     final prefs = await SharedPreferences.getInstance();
+    final cards = await StorageService().getAllCards();
+    final countsRaw = prefs.getString('card_view_counts');
+    Map<String, int> counts = {};
+    if (countsRaw != null) {
+      try {
+        final Map<String, dynamic> decoded = jsonDecode(countsRaw);
+        decoded.forEach((key, value) {
+          if (value is int) {
+            counts[key] = value;
+          }
+        });
+      } catch (_) {}
+    }
+
+    final rawShuffled = prefs.getStringList('shuffled_hashtags') ?? [];
+    final rawCompleted = prefs.getStringList('completed_hashtags') ?? [];
+
+    // Filter out orphan tags that no longer have cards in database
+    final shuffled = rawShuffled.where((tag) {
+      final norm = tag.trim().toLowerCase();
+      return cards.any((c) => c.tags.any((t) => t.trim().toLowerCase() == norm));
+    }).toList();
+    final completed = rawCompleted.where((tag) {
+      final norm = tag.trim().toLowerCase();
+      return cards.any((c) => c.tags.any((t) => t.trim().toLowerCase() == norm));
+    }).toList();
+
     if (mounted) {
       setState(() {
+        _cards = cards;
+        _cardViewCounts = counts;
         _frequencyHours = prefs.getInt('notification_frequency') ?? 3;
-        _shuffledTags = prefs.getStringList('shuffled_hashtags') ?? [];
-        _completedTags = prefs.getStringList('completed_hashtags') ?? [];
+        _shuffledTags = shuffled;
+        _completedTags = completed;
+        _globalStepPointer = prefs.getInt('global_rotation_step_pointer') ?? 0;
         _themeModeStr = prefs.getString('theme_mode') ?? 'light';
         _isLoading = false;
       });
@@ -80,24 +116,36 @@ class _NotificationsViewState extends State<NotificationsView> {
       if (!completed.contains(tag)) {
         completed.add(tag);
       }
+      // Update scheduled_notifications in SQLite: mark all pending items for this tag as 'sent'!
+      await StorageService().markScheduledNotificationsForTagSent(tag);
     } else {
       completed.remove(tag);
+      // Reset scheduled_notifications in SQLite for this tag back to 'pending'!
+      await StorageService().markScheduledNotificationsForTagPending(tag);
     }
 
     if (completed.length >= shuffled.length && shuffled.isNotEmpty) {
       completed = [];
       shuffled.shuffle();
       await prefs.setStringList('shuffled_hashtags', shuffled);
+      await _notificationService.rescheduleReminders(_frequencyHours, forceReset: true);
+    } else {
+      await prefs.setStringList('completed_hashtags', completed);
     }
 
-    await prefs.setStringList('completed_hashtags', completed);
-    setState(() {
-      _shuffledTags = shuffled;
-      _completedTags = completed;
-    });
-
-    await _notificationService.rescheduleReminders(_frequencyHours);
     await _loadSettingsAndChecklist();
+  }
+
+  String? get _activeTag {
+    // activeTags = uncompleted tags in rotation order
+    final active = _shuffledTags.where((t) => !_completedTags.contains(t)).toList();
+    if (active.isEmpty && _shuffledTags.isNotEmpty) {
+      // All tags completed — cycle from shuffled list
+      return _shuffledTags[_globalStepPointer % _shuffledTags.length];
+    }
+    if (active.isEmpty) return null;
+    // The global pointer selects which active tag is NEXT
+    return active[_globalStepPointer % active.length];
   }
 
   @override
@@ -107,6 +155,8 @@ class _NotificationsViewState extends State<NotificationsView> {
     final panelBg = isDark ? const Color(0xFF111827) : Colors.white;
     final borderColor = isDark ? Colors.white : Colors.black;
     final shadowColor = isDark ? Colors.white.withOpacity(0.1) : Colors.black.withOpacity(0.15);
+
+    final activeTag = _activeTag;
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -236,106 +286,9 @@ class _NotificationsViewState extends State<NotificationsView> {
                       ),
                       const SizedBox(height: 20),
 
-                      // Rotation Progress Checklist Card
-                      if (_shuffledTags.isNotEmpty) ...[
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(18),
-                          decoration: BoxDecoration(
-                            color: panelBg,
-                            border: Border.all(color: borderColor, width: 2.5),
-                            borderRadius: BorderRadius.circular(12),
-                            boxShadow: [
-                              BoxShadow(color: borderColor, offset: const Offset(4, 4)),
-                            ],
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Row(
-                                    children: [
-                                      const Icon(Icons.checklist_rtl_rounded, color: Colors.cyan, size: 22),
-                                      const SizedBox(width: 8),
-                                      Text(
-                                        'ROTATION PROGRESS',
-                                        style: TextStyle(fontWeight: FontWeight.w900, fontSize: 14, color: textColor),
-                                      ),
-                                    ],
-                                  ),
-                                  Text(
-                                    '${_completedTags.length}/${_shuffledTags.length} DONE',
-                                    style: TextStyle(color: textColor, fontSize: 12, fontWeight: FontWeight.w900),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 12),
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(4),
-                                child: LinearProgressIndicator(
-                                  value: _shuffledTags.isEmpty ? 0 : _completedTags.length / _shuffledTags.length,
-                                  backgroundColor: isDark ? Colors.white12 : Colors.black12,
-                                  valueColor: const AlwaysStoppedAnimation<Color>(Colors.green),
-                                  minHeight: 8,
-                                ),
-                              ),
-                              const SizedBox(height: 16),
-                              Wrap(
-                                spacing: 8,
-                                runSpacing: 8,
-                                children: _shuffledTags.map((tag) {
-                                  final isCompleted = _completedTags.contains(tag);
-                                  return InkWell(
-                                    onTap: () => _toggleTagCompletion(tag, !isCompleted),
-                                    borderRadius: BorderRadius.circular(4),
-                                    child: AnimatedContainer(
-                                      duration: const Duration(milliseconds: 150),
-                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                      decoration: BoxDecoration(
-                                        color: isCompleted 
-                                            ? Colors.green.withOpacity(0.15) 
-                                            : panelBg,
-                                        borderRadius: BorderRadius.circular(4),
-                                        border: Border.all(
-                                          color: isCompleted ? Colors.green : borderColor,
-                                          width: 2.0,
-                                        ),
-                                      ),
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Icon(
-                                            isCompleted 
-                                                ? Icons.check_box 
-                                                : Icons.check_box_outline_blank,
-                                            color: isCompleted ? Colors.green : textColor.withOpacity(0.6),
-                                            size: 16,
-                                          ),
-                                          const SizedBox(width: 6),
-                                          Text(
-                                            '#$tag',
-                                            style: TextStyle(
-                                              color: isCompleted ? Colors.green : textColor,
-                                              fontSize: 12,
-                                              fontWeight: FontWeight.w900,
-                                              decoration: isCompleted ? TextDecoration.lineThrough : null,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  );
-                                }).toList(),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 20),
-                      ],
 
-                      // Test Notification Action Card
+
+                      // Next Notification Action Card
                       Container(
                         width: double.infinity,
                         padding: const EdgeInsets.all(18),
@@ -351,22 +304,22 @@ class _NotificationsViewState extends State<NotificationsView> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'TEST NOTIFICATIONS',
+                              'NEXT NOTIFICATION TRIGGER',
                               style: TextStyle(color: textColor, fontSize: 14, fontWeight: FontWeight.w900),
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              'Trigger a test reminder banner right now to check layout contrast and system alerts.',
-                              style: TextStyle(color: isDark ? Colors.grey[400] : Colors.grey[700], fontSize: 11),
+                              'Instantly triggers the next scheduled notification in the active rotation after a 5-second delay. Subsequent taps cycle through the remaining cards.',
+                              style: TextStyle(color: isDark ? Colors.grey[400] : Colors.grey[700], fontSize: 11, height: 1.4),
                             ),
                             const SizedBox(height: 16),
                             SizedBox(
                               width: double.infinity,
                               height: 46,
                               child: ElevatedButton.icon(
-                                icon: Icon(Icons.notifications_active_outlined, color: textColor),
+                                icon: Icon(Icons.send_rounded, color: textColor),
                                 label: Text(
-                                  'SEND TEST ALERT',
+                                  'SEND NEXT NOTIFICATION',
                                   style: TextStyle(color: textColor, fontWeight: FontWeight.w900, fontSize: 13),
                                 ),
                                 style: ElevatedButton.styleFrom(
@@ -376,29 +329,50 @@ class _NotificationsViewState extends State<NotificationsView> {
                                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                                 ),
                                 onPressed: () async {
-                                  final cards = await StorageService().getAllCards();
-                                  if (cards.isEmpty) {
+                                  final card = await _notificationService.scheduleNextNotificationAfter5Seconds();
+                                  if (card == null) {
                                     if (mounted) {
                                       ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(content: Text('Please sync some flashcards first to run a test.')),
+                                        const SnackBar(content: Text('Please sync or create flashcards first.')),
                                       );
                                     }
                                     return;
                                   }
-                                  final firstCard = cards.first;
-                                  await _notificationService.scheduleTestNotificationAfter5Seconds(
-                                    'MindLoop Review!',
-                                    firstCard.question,
-                                    firstCard.id,
-                                  );
+                                  await _loadSettingsAndChecklist();
                                   if (mounted) {
+                                    final tagLabel = card.tags.isNotEmpty ? '#${card.tags.first}' : '';
                                     ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                        content: Text('Test notification scheduled! Close the app now to test background delivery. Firing in 5s...'),
-                                        duration: Duration(seconds: 4),
+                                      SnackBar(
+                                        content: Text('Next notification ($tagLabel) scheduled! Firing in 5 seconds...'),
+                                        duration: const Duration(seconds: 4),
                                       ),
                                     );
                                   }
+                                },
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            SizedBox(
+                              width: double.infinity,
+                              height: 46,
+                              child: OutlinedButton.icon(
+                                icon: const Icon(Icons.calendar_month_rounded, color: Colors.cyan),
+                                label: Text(
+                                  'SHOW SCHEDULED NOTIFICATIONS',
+                                  style: TextStyle(color: textColor, fontWeight: FontWeight.w900, fontSize: 13),
+                                ),
+                                style: OutlinedButton.styleFrom(
+                                  backgroundColor: panelBg,
+                                  side: BorderSide(color: isDark ? Colors.cyan : const Color(0xFF06B6D4), width: 2.0),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                ),
+                                onPressed: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => const ScheduledNotificationsView(),
+                                    ),
+                                  ).then((_) => _loadSettingsAndChecklist());
                                 },
                               ),
                             ),

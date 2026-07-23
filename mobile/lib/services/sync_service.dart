@@ -52,6 +52,9 @@ class SyncService extends ChangeNotifier {
     }
     
     await checkPcConnection();
+    if (_isPcReachable) {
+      triggerSyncCycle();
+    }
     startPingTimer();
   }
 
@@ -87,6 +90,9 @@ class SyncService extends ChangeNotifier {
       if (_isPcReachable != reachable) {
         _isPcReachable = reachable;
         notifyListeners();
+        if (reachable) {
+          triggerSyncCycle();
+        }
       }
     } catch (_) {
       if (_isPcReachable) {
@@ -132,27 +138,19 @@ class SyncService extends ChangeNotifier {
     super.dispose();
   }
 
-  // 1. Discovery & Pairing Flow
+  // 1. Discovery & Pairing Flow (UDP Broadcast disabled; direct QR IP sweep)
   Future<bool> pairWithQR(String qrRawPayload) async {
     try {
       final Map<String, dynamic> data = jsonDecode(qrRawPayload);
-      final String pairingCode = data['pairing_code'];
-      final int port = data['port'];
-      final List<dynamic> ips = data['ips'];
+      final String pairingCode = data['pairing_code'] ?? '';
+      final int port = data['port'] ?? 6769;
+      final List<dynamic> ips = data['ips'] ?? [];
 
-      // Step A: Attempt UDP Broadcast discovery
-      String? foundIp = await _discoverServerViaUdp(pairingCode, port);
-      bool paired = false;
-      
-      if (foundIp != null) {
-        paired = await _runPairingHandshake(foundIp, port, pairingCode);
-      }
-      
-      // Step B: If UDP fails or handshake fails, fall back to sweeping TCP IP list
-      if (!paired) {
-        foundIp = await _sweepIpsForPairing(ips.cast<String>(), port, pairingCode);
-        paired = (foundIp != null);
-      }
+      print("Pairing via QR payload... Sweeping IP targets: $ips on port $port");
+
+      // UDP broadcast disabled: Directly sweep all target IPs provided in QR code payload
+      String? foundIp = await _sweepIpsForPairing(ips.cast<String>(), port, pairingCode);
+      bool paired = (foundIp != null);
 
       if (paired && foundIp != null) {
         await _saveConnection(foundIp, port);
@@ -166,7 +164,8 @@ class SyncService extends ChangeNotifier {
     return false;
   }
 
-  // Send UDP Broadcast to discover the PC
+  /*
+  // Disabled UDP Broadcast discovery
   Future<String?> _discoverServerViaUdp(String pairingCode, int port) async {
     try {
       final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
@@ -178,13 +177,11 @@ class SyncService extends ChangeNotifier {
       };
       final List<int> payload = utf8.encode(jsonEncode(discoverMsg));
       
-      // Broadcast to 255.255.255.255 on specified port
       socket.send(payload, InternetAddress("255.255.255.255"), port);
       print("Sent UDP discovery broadcast to port $port");
 
       final Completer<String?> completer = Completer();
       
-      // Setup a timeout for listening
       Timer(const Duration(seconds: 2), () {
         if (!completer.isCompleted) {
           socket.close();
@@ -204,9 +201,7 @@ class SyncService extends ChangeNotifier {
                 socket.close();
                 completer.complete(pcIp);
               }
-            } catch (e) {
-              // Ignore parse errors from foreign packets
-            }
+            } catch (e) {}
           }
         }
       });
@@ -217,6 +212,7 @@ class SyncService extends ChangeNotifier {
       return null;
     }
   }
+  */
 
   // Run the HTTP pairing handshake to register with the PC
   Future<bool> _runPairingHandshake(String ip, int port, String pairingCode) async {
@@ -233,6 +229,55 @@ class SyncService extends ChangeNotifier {
         }),
       ).timeout(const Duration(seconds: 2));
 
+      return response.statusCode == 200;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Manual IP / Connection URL Connection Method
+  Future<bool> connectWithManualUrl(String urlOrIp) async {
+    try {
+      String raw = urlOrIp.trim();
+      if (raw.isEmpty) return false;
+
+      if (!raw.startsWith('http://') && !raw.startsWith('https://')) {
+        raw = 'http://$raw';
+      }
+
+      final uri = Uri.parse(raw);
+      final host = uri.host;
+      final port = uri.hasPort ? uri.port : 6769;
+
+      if (host.isEmpty) return false;
+
+      print("Attempting manual connection to $host:$port");
+
+      final paired = await _runPairingHandshake(host, port, "manual");
+      final heartbeat = await _tryHeartbeatDirect(host, port);
+
+      if (paired || heartbeat) {
+        await _saveConnection(host, port);
+        triggerSyncCycle();
+        return true;
+      }
+    } catch (e) {
+      print("Manual URL connection error: $e");
+    }
+    return false;
+  }
+
+  Future<bool> _tryHeartbeatDirect(String host, int port) async {
+    try {
+      final uri = Uri.parse("http://$host:$port/api/pairing/heartbeat/$_deviceId");
+      final response = await http.post(
+        uri,
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({
+          "device_name": _deviceName ?? "Flutter Client",
+          "client_ip": "127.0.0.1",
+        }),
+      ).timeout(const Duration(seconds: 2));
       return response.statusCode == 200;
     } catch (e) {
       return false;
@@ -261,24 +306,50 @@ class SyncService extends ChangeNotifier {
     print("Starting sync cycle with PC http://$_serverIp:$_serverPort");
 
     try {
-      // Step A: Upload mobile library hashes
+      // Step A: Upload mobile library hashes and rich metadata (including full answer content)
       final localCards = await _storageService.getAllCards();
       final localHashes = localCards.map((c) => c.id).toList();
+      
+      final List<Map<String, dynamic>> cardsMetadata = [];
+      for (final c in localCards) {
+        final answerContent = await _storageService.getCardMarkdownContent(c);
+        cardsMetadata.add({
+          "id": c.id,
+          "question": c.question,
+          "answer": answerContent,
+          "created_at": c.createdAt,
+          "tags": c.tags,
+          "source_pdf": c.sourcePdf,
+          "pdf_page": c.pdfRefLine,
+          "attachments": c.attachments
+        });
+      }
 
       final libUri = Uri.parse("http://$_serverIp:$_serverPort/api/sync/device/$_deviceId/library");
       await http.post(
         libUri,
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({"card_hashes": localHashes}),
+        body: jsonEncode({
+          "card_hashes": localHashes,
+          "cards_metadata": cardsMetadata
+        }),
       );
 
-      // Step B: Get pending sync transfers
+      // Step B: Get pending sync transfers & prune queues
       final pendingUri = Uri.parse("http://$_serverIp:$_serverPort/api/sync/device/$_deviceId/pending");
       final pendingResp = await http.get(pendingUri);
       
       if (pendingResp.statusCode == 200) {
         final Map<String, dynamic> data = jsonDecode(pendingResp.body);
         final List<dynamic> pendingHashes = data['pending_hashes'] ?? [];
+        final List<dynamic> pruneHashes = data['prune_hashes'] ?? [];
+
+        // Prune obsolete/edited cards from phone storage
+        for (String oldHash in pruneHashes.cast<String>()) {
+          await _storageService.deleteCard(oldHash);
+          print("Pruned obsolete card $oldHash on mobile device.");
+        }
+
         lastSyncedCount = pendingHashes.length;
         print("Sync queue has ${pendingHashes.length} cards to download.");
 
@@ -291,6 +362,27 @@ class SyncService extends ChangeNotifier {
     } finally {
       _isSyncing = false;
       notifyListeners();
+    }
+  }
+
+  // Upload a local phone card .flash ZIP to the PC server
+  Future<bool> _uploadLocalCardZip(Flashcard card) async {
+    try {
+      final zipFile = await _storageService.createZipFromLocalCard(card);
+      if (zipFile == null || !await zipFile.exists()) return false;
+
+      final uri = Uri.parse("http://$_serverIp:$_serverPort/api/sync/device/$_deviceId/upload_flash");
+      final request = http.MultipartRequest('POST', uri)
+        ..files.add(await http.MultipartFile.fromPath('file', zipFile.path, filename: '${card.id}.flash'));
+
+      final streamedResponse = await request.send();
+      final response = await http.Response.fromStream(streamedResponse);
+      
+      try { await zipFile.delete(); } catch (_) {}
+      return response.statusCode == 200;
+    } catch (e) {
+      print("Failed to upload card ${card.id} to PC: $e");
+      return false;
     }
   }
 

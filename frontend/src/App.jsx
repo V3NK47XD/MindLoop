@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import MarkdownEditor, { renderMarkdownHTML } from './components/MarkdownEditor';
 import { 
   FileUp, 
   Smartphone, 
@@ -15,7 +16,8 @@ import {
   Sparkles,
   Link,
   Check,
-  AlertTriangle
+  AlertTriangle,
+  Sliders
 } from 'lucide-react';
 
 const API_BASE = 'http://localhost:6769';
@@ -177,16 +179,26 @@ function TextBlock({ text, cardId }) {
 
 function MarkdownRenderer({ content, cardId }) {
   if (!content) return null;
-  const parts = content.split(/\$\$/g);
+
+  const resolveUrl = (src) => {
+    if (!src) return '';
+    if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('data:')) {
+      return src;
+    }
+    const filename = src.replace(/^assets\//, '');
+    if (cardId) {
+      return `${API_BASE}/api/cards/${cardId}/assets/${filename}`;
+    }
+    return src;
+  };
+
   return (
-    <div className="markdown-body">
-      {parts.map((part, index) => {
-        if (index % 2 === 1) {
-          return <MathBlock key={index} tex={part.trim()} />;
-        }
-        return <TextBlock key={index} text={part} cardId={cardId} />;
-      })}
-    </div>
+    <div 
+      className="preview-markdown-body"
+      dangerouslySetInnerHTML={{ 
+        __html: renderMarkdownHTML(content, resolveUrl) 
+      }}
+    />
   );
 }
 
@@ -291,12 +303,70 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFilterTag, setSelectedFilterTag] = useState('All');
   
+  // Env Editor state
+  const [envRawText, setEnvRawText] = useState('');
+  const [envFilePath, setEnvFilePath] = useState('');
+  const [isEnvSaving, setIsEnvSaving] = useState(false);
+  const [envMessage, setEnvMessage] = useState('');
+
+  const fetchEnvConfig = async () => {
+    setEnvMessage('');
+    try {
+      const res = await fetch(`${API_BASE}/api/env`);
+      if (res.ok) {
+        const data = await res.json();
+        setEnvRawText(data.raw_env || '');
+        setEnvFilePath(data.env_file_path || '');
+      }
+    } catch (err) {
+      console.error("Failed to fetch .env config:", err);
+    }
+  };
+
+  const handleSaveEnvConfig = async () => {
+    setIsEnvSaving(true);
+    setEnvMessage('');
+    try {
+      const res = await fetch(`${API_BASE}/api/env`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ raw_env: envRawText })
+      });
+      if (res.ok) {
+        setEnvMessage("✅ .env Configuration updated successfully!");
+        fetchEnvConfig();
+      } else {
+        const data = await res.json();
+        setEnvMessage(`❌ Error updating .env: ${data.detail}`);
+      }
+    } catch (err) {
+      setEnvMessage(`❌ Network error: ${err.message}`);
+    } finally {
+      setIsEnvSaving(false);
+    }
+  };
+  
   // Navigation & Workspace states
-  const [currentView, setCurrentView] = useState('sync-center'); // 'sync-center', 'pc-manage', 'phone-manage', 'workspace'
+  const [currentView, setCurrentView] = useState('sync-center'); // 'sync-center', 'pc-manage', 'phone-manage', 'workspace', 'generated-review', 'env-settings'
   const [selectedWorkspaceCard, setSelectedWorkspaceCard] = useState(null);
+  const [generatedReviewCards, setGeneratedReviewCards] = useState([]);
+  const [selectedGeneratedCard, setSelectedGeneratedCard] = useState(null);
   const [wsQuestion, setWsQuestion] = useState('');
   const [wsAnswer, setWsAnswer] = useState('');
   const [wsTag, setWsTag] = useState('');
+
+  const selectGeneratedCardForEdit = (card) => {
+    setSelectedWorkspaceCard(card);
+    setSelectedGeneratedCard(card);
+    setWsQuestion(card.question || '');
+    setWsAnswer(card.answer || '');
+    setWsTag(card.tags?.[0] || '');
+    setWsSourcePdf(card.source_pdf || 'Generated PDF');
+    setWsPdfRefLine(card.pdf_page || 0);
+    setWsExistingAttachments(card.attachments || []);
+    setWsImages([]);
+    setWsError('');
+  };
   const [wsSourcePdf, setWsSourcePdf] = useState('Manual');
   const [wsPdfRefLine, setWsPdfRefLine] = useState(0);
   const [wsError, setWsError] = useState('');
@@ -555,9 +625,27 @@ function App() {
 
       const data = await res.json();
       if (res.ok) {
-        setGenerationLogs(prev => prev + `Successfully generated ${data.count} flashcards!\nFiles saved in local storage.\n`);
+        setGenerationLogs(prev => prev + `Successfully generated ${data.count} flashcards!\nOpening review canvas...\n`);
         fetchPcLibrary();
         if (activeDevice) fetchComparison();
+
+        if (data.card_hashes && data.card_hashes.length > 0) {
+          const loadedCards = await Promise.all(data.card_hashes.map(async (hash) => {
+            try {
+              const cRes = await fetch(`${API_BASE}/api/cards/${hash}/content`);
+              if (cRes.ok) return await cRes.json();
+            } catch (_) {}
+            return null;
+          }));
+          const validCards = loadedCards.filter(Boolean);
+
+          if (validCards.length > 0) {
+            setGeneratedReviewCards(validCards);
+            selectGeneratedCardForEdit(validCards[0]);
+            setShowGeneratorModal(false);
+            setCurrentView('generated-review');
+          }
+        }
       } else {
         setGenerationLogs(prev => prev + `Error: ${data.detail || 'Unknown error occurred.'}\n`);
       }
@@ -636,6 +724,21 @@ function App() {
     }
   };
 
+  const handleDeletePhoneCard = async (cardId) => {
+    if (!activeDevice) return;
+    if (!confirm("Are you sure you want to delete this flashcard from the connected mobile device?")) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/sync/device/${activeDevice.device_id}/card/${cardId}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        fetchComparison();
+      }
+    } catch (err) {
+      console.error("Failed to delete card from phone:", err);
+    }
+  };
+
   const handleEnterEditWorkspace = async (card) => {
     setIsLoadingContent(true);
     setWsError('');
@@ -671,12 +774,16 @@ function App() {
       setWsError("Answer/Content is required.");
       return;
     }
+    if (!wsTag.trim()) {
+      setWsError("Tag is required! Every flashcard must have exactly 1 tag.");
+      return;
+    }
     
     setIsSavingWs(true);
     setWsError('');
     
     // Construct tag list (max 1 tag)
-    const tags = wsTag.trim() ? [wsTag.trim()] : [];
+    const tags = [wsTag.trim()];
     
     const payload = {
       question: wsQuestion,
@@ -715,8 +822,23 @@ function App() {
         alert(selectedWorkspaceCard ? "Flashcard updated successfully!" : "Flashcard created successfully!");
         fetchPcLibrary();
         if (activeDevice) fetchComparison();
-        // Return to PC manage view
-        setCurrentView('pc-manage');
+
+        if (currentView === 'generated-review') {
+          const updatedCard = {
+            ...selectedWorkspaceCard,
+            id: data.card_hash || selectedWorkspaceCard?.id,
+            question: wsQuestion,
+            answer: wsAnswer,
+            tags: tags,
+            source_pdf: wsSourcePdf,
+            pdf_page: parseInt(wsPdfRefLine) || 0,
+            attachments: data.attachments || wsExistingAttachments
+          };
+          setGeneratedReviewCards(prev => prev.map(c => c.id === selectedWorkspaceCard.id ? updatedCard : c));
+          selectGeneratedCardForEdit(updatedCard);
+        } else {
+          setCurrentView('pc-manage');
+        }
       } else {
         setWsError(data.detail || "Failed to save flashcard.");
       }
@@ -727,9 +849,26 @@ function App() {
     }
   };
 
-  // Filter lists based on toggle
+  const [phoneSearchQuery, setPhoneSearchQuery] = useState('');
+  const [phoneFilterTag, setPhoneFilterTag] = useState('All');
+
+  // Filter lists based on toggle & search
   const visiblePcCards = showSyncedCards ? pcCards : pcCards.filter(c => c.sync_status !== 'synced');
   const visiblePhoneCards = showSyncedCards ? phoneCards : phoneCards.filter(c => c.sync_status !== 'synced');
+
+  const phoneTags = useMemo(() => {
+    const tagSet = new Set();
+    phoneCards.forEach(c => c.tags?.forEach(t => tagSet.add(t)));
+    return Array.from(tagSet).sort();
+  }, [phoneCards]);
+
+  const filteredPhoneCards = visiblePhoneCards.filter(card => {
+    const matchesSearch = !phoneSearchQuery || 
+      card.question?.toLowerCase().includes(phoneSearchQuery.toLowerCase()) || 
+      card.source_pdf?.toLowerCase().includes(phoneSearchQuery.toLowerCase());
+    const matchesTag = phoneFilterTag === 'All' || card.tags?.includes(phoneFilterTag);
+    return matchesSearch && matchesTag;
+  });
 
   const renderPcManageView = () => {
     return (
@@ -826,15 +965,36 @@ function App() {
 
         <div style={{ padding: '0 24px 24px 24px', width: '100%' }}>
           <section className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            <h2>Phone Storage Manager {activeDevice ? `(${visiblePhoneCards.length} cards)` : ''}</h2>
+            <h2>Phone Storage Manager {activeDevice ? `(${filteredPhoneCards.length} cards)` : ''}</h2>
+
+            {/* Search Bar & Tag Filter Dropdown */}
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <input 
+                type="text" 
+                placeholder="Search phone cards by question or PDF..." 
+                value={phoneSearchQuery}
+                onChange={(e) => setPhoneSearchQuery(e.target.value)}
+                style={{ flex: 1 }}
+              />
+              <select
+                value={phoneFilterTag}
+                onChange={(e) => setPhoneFilterTag(e.target.value)}
+                style={{ maxWidth: '200px' }}
+              >
+                <option value="All">All Tags</option>
+                {phoneTags.map((tag, idx) => (
+                  <option key={idx} value={tag}>{tag}</option>
+                ))}
+              </select>
+            </div>
 
             <div className="cards-list" style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxHeight: '600px', overflowY: 'auto' }}>
               {!activeDevice ? (
                 <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>No device connected.</div>
-              ) : visiblePhoneCards.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>No cards synced to phone.</div>
+              ) : filteredPhoneCards.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>No cards found.</div>
               ) : (
-                visiblePhoneCards.map(card => (
+                filteredPhoneCards.map(card => (
                   <div 
                     key={card.id} 
                     className="flashcard-row"
@@ -850,7 +1010,14 @@ function App() {
                         ))}
                       </div>
                     </div>
-                    <CheckCircle2 color="var(--success)" size={20} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: '16px' }} onClick={e => e.stopPropagation()}>
+                      <button className="btn btn-secondary" style={{ padding: '6px 12px', fontSize: '0.8rem' }} onClick={() => handleEnterEditWorkspace(card)}>
+                        Edit
+                      </button>
+                      <button className="btn btn-danger" style={{ padding: '6px 12px', fontSize: '0.8rem', background: 'var(--red)', color: '#fff' }} onClick={() => handleDeletePhoneCard(card.id)}>
+                        Delete
+                      </button>
+                    </div>
                   </div>
                 ))
               )}
@@ -874,7 +1041,7 @@ function App() {
           </button>
         </header>
 
-        <div style={{ padding: '0 24px 24px 24px', width: '100%', maxWidth: '900px', margin: '0 auto' }}>
+        <div style={{ padding: '0 24px 24px 24px', width: '92vw', maxWidth: '92vw', margin: '0 auto' }}>
           <section className="glass-panel" style={{ padding: '32px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
             <h2>{selectedWorkspaceCard ? "Edit Flashcard" : "Create Flashcard Manually"}</h2>
             
@@ -897,12 +1064,28 @@ function App() {
               </div>
 
               <div>
-                <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px' }}>Detailed Content (Answer / Back Side - Markdown & LaTeX support)</label>
-                <textarea 
+                <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px' }}>
+                  Detailed Content (Notion / AppFlowy Rich Workspace Editor)
+                </label>
+                <MarkdownEditor 
                   value={wsAnswer} 
-                  onChange={(e) => setWsAnswer(e.target.value)} 
-                  placeholder="Supports bold **text**, lists, images, and math equations like $E=mc^2$ or block math $$f(x)=\\int_{-\\infty}^\\infty \\hat{f}(\\xi)e^{2\\pi i \\xi x}d\\xi$$"
-                  style={{ width: '100%', minHeight: '220px', fontFamily: 'monospace' }}
+                  onChange={setWsAnswer} 
+                  getAttachmentUrl={(src) => {
+                    if (!src) return '';
+                    if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('data:')) {
+                      return src;
+                    }
+                    const filename = src.replace(/^assets\//, '');
+                    const localFile = wsImages.find(f => f.name === filename);
+                    if (localFile) {
+                      return URL.createObjectURL(localFile);
+                    }
+                    if (selectedWorkspaceCard) {
+                      return `${API_BASE}/api/cards/${selectedWorkspaceCard.id}/assets/${filename}`;
+                    }
+                    return src;
+                  }}
+                  placeholder="Type your markdown content here... Press '/' for block commands or use the toolbar above!"
                 />
               </div>
 
@@ -1087,6 +1270,368 @@ function App() {
     );
   };
 
+  const renderGeneratedReviewView = () => {
+    return (
+      <div className="app-container">
+        <header className="app-header glass-panel">
+          <div className="logo-container" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <img src="/icon.png" alt="MindLoop Logo" style={{ height: '32px', width: '32px', borderRadius: '6px' }} />
+            <h1 className="logo-text">MindLoop / Generated Flashcards Review ({generatedReviewCards.length})</h1>
+          </div>
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button className="btn btn-secondary" onClick={() => setCurrentView('sync-center')}>
+              Finish & Go to Sync Center
+            </button>
+            <button className="btn btn-primary" onClick={() => setCurrentView('pc-manage')}>
+              PC Storage Manager
+            </button>
+          </div>
+        </header>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: '20px', padding: '0 24px 24px 24px', width: '96vw', margin: '0 auto' }}>
+          {/* Left Sidebar: Generated Flashcards List */}
+          <aside className="glass-panel" style={{ padding: '18px', display: 'flex', flexDirection: 'column', gap: '14px', height: 'calc(90vh - 100px)', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid var(--border-color)', paddingBottom: '10px' }}>
+              <h3 style={{ fontSize: '1.05rem', fontWeight: '800', margin: 0 }}>Newly Generated Cards</h3>
+              <span className="tag-badge primary" style={{ margin: 0 }}>{generatedReviewCards.length} Cards</span>
+            </div>
+
+            <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: 0, textAlign: 'left' }}>
+              Select any card below to review, edit markdown, or manage image attachments in the Notion editor.
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {generatedReviewCards.map((card, index) => {
+                const isSelected = selectedGeneratedCard?.id === card.id;
+                return (
+                  <div
+                    key={card.id || index}
+                    className={`generated-card-item ${isSelected ? 'active' : ''}`}
+                    onClick={() => selectGeneratedCardForEdit(card)}
+                  >
+                    <div className="gen-card-headline">{card.question || "Untitled Flashcard"}</div>
+                    <div className="gen-card-badges">
+                      {card.tags && card.tags.map((t, i) => (
+                        <span key={i} className="tag-badge">#{t}</span>
+                      ))}
+                      {card.pdf_page ? (
+                        <span className="tag-badge primary">Page {card.pdf_page}</span>
+                      ) : null}
+                      {card.attachments && card.attachments.length > 0 ? (
+                        <span className="tag-badge green">📷 {card.attachments.length}</span>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </aside>
+
+          {/* Right Main Editor Canvas */}
+          <main className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px', height: 'calc(90vh - 100px)', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h2>Review & Edit Flashcard</h2>
+              <button 
+                className="btn btn-primary" 
+                onClick={handleSaveWorkspaceCard}
+                disabled={isSavingWs}
+              >
+                {isSavingWs ? "Saving..." : "Save Card Edits"}
+              </button>
+            </div>
+
+            {wsError && (
+              <div style={{ color: 'var(--red)', background: 'rgba(239,68,68,0.1)', padding: '12px', border: '2px solid var(--red)', borderRadius: '8px', fontWeight: 'bold', textTransform: 'uppercase', fontSize: '0.85rem' }}>
+                {wsError}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', textAlign: 'left' }}>
+              <div>
+                <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px' }}>Topic Headline (Question / Front Side)</label>
+                <input 
+                  type="text" 
+                  value={wsQuestion} 
+                  onChange={(e) => setWsQuestion(e.target.value)} 
+                  placeholder="Topic Headline..."
+                  style={{ width: '100%' }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px' }}>
+                  Detailed Content (Notion / AppFlowy Rich Workspace Editor)
+                </label>
+                <MarkdownEditor 
+                  value={wsAnswer} 
+                  onChange={setWsAnswer} 
+                  getAttachmentUrl={(src) => {
+                    if (!src) return '';
+                    if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('data:')) {
+                      return src;
+                    }
+                    const filename = src.replace(/^assets\//, '');
+                    const localFile = wsImages.find(f => f.name === filename);
+                    if (localFile) {
+                      return URL.createObjectURL(localFile);
+                    }
+                    if (selectedWorkspaceCard) {
+                      return `${API_BASE}/api/cards/${selectedWorkspaceCard.id}/assets/${filename}`;
+                    }
+                    return src;
+                  }}
+                  placeholder="Type your markdown content here... Press '/' for block commands!"
+                />
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                <div>
+                  <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px' }}>Tag (Exactly 1 Tag Allowed)</label>
+                  <input 
+                    type="text" 
+                    value={wsTag} 
+                    onChange={(e) => setWsTag(e.target.value)} 
+                    placeholder="e.g. machine-learning"
+                    style={{ width: '100%' }}
+                  />
+                  {allTags.length > 0 && (
+                    <div style={{ marginTop: '8px' }}>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Quick Select Tag:</span>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '4px' }}>
+                        {allTags.map((t, idx) => (
+                          <span 
+                            key={idx} 
+                            className="tag-badge" 
+                            style={{ cursor: 'pointer' }}
+                            onClick={() => setWsTag(t)}
+                          >
+                            #{t}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  <div>
+                    <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px' }}>Source PDF</label>
+                    <input 
+                      type="text" 
+                      value={wsSourcePdf} 
+                      onChange={(e) => setWsSourcePdf(e.target.value)} 
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px' }}>PDF Page / Ref Line</label>
+                    <input 
+                      type="number" 
+                      value={wsPdfRefLine} 
+                      onChange={(e) => setWsPdfRefLine(parseInt(e.target.value) || 0)} 
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Images & Diagrams Section */}
+              <div style={{ marginTop: '16px', borderTop: '2.5px dashed var(--border-color)', paddingTop: '16px', textAlign: 'left' }}>
+                <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px' }}>Images / Diagrams (Optional)</label>
+                <div style={{ display: 'flex', gap: '16px', alignItems: 'center', marginBottom: '16px' }}>
+                  <input 
+                    type="file" 
+                    multiple 
+                    accept="image/*" 
+                    id="gen-ws-image-upload"
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      if (e.target.files) {
+                        setWsImages(prev => [...prev, ...Array.from(e.target.files)]);
+                      }
+                    }}
+                  />
+                  <label htmlFor="gen-ws-image-upload" className="btn btn-secondary" style={{ cursor: 'pointer', margin: 0 }}>
+                    Select Image Files
+                  </label>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    Choose images to package inside the flashcard ZIP.
+                  </span>
+                </div>
+
+                {/* Combined list of files */}
+                {((wsExistingAttachments && wsExistingAttachments.length > 0) || (wsImages && wsImages.length > 0)) && (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', background: 'var(--panel-bg)', padding: '16px', borderRadius: '8px', border: '1.5px solid var(--border-color)' }}>
+                    {/* Existing attachments */}
+                    <div>
+                      <h4 style={{ fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '8px', textTransform: 'uppercase' }}>Active Attachments ({wsExistingAttachments.length})</h4>
+                      {wsExistingAttachments.length === 0 ? (
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>No active attachments.</span>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {wsExistingAttachments.map((att, i) => {
+                            const filename = att.split('/').pop();
+                            const imageUrl = selectedWorkspaceCard ? `${API_BASE}/api/cards/${selectedWorkspaceCard.id}/assets/${filename}` : '';
+                            return (
+                              <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', border: '1px solid var(--panel-border)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
+                                  {imageUrl && <img src={imageUrl} alt={filename} style={{ width: '32px', height: '32px', borderRadius: '4px', objectFit: 'cover', border: '1px solid var(--border-color)' }} />}
+                                  <span style={{ fontSize: '0.75rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={filename}>{filename}</span>
+                                </div>
+                                <div style={{ display: 'flex', gap: '6px' }}>
+                                  <button 
+                                    className="btn btn-secondary" 
+                                    style={{ padding: '2px 6px', fontSize: '0.7rem' }}
+                                    onClick={() => setWsAnswer(prev => prev + `\n![${filename.split('.')[0]}](assets/${filename})`)}
+                                  >
+                                    Insert Ref
+                                  </button>
+                                  <button 
+                                    className="btn btn-danger" 
+                                    style={{ padding: '2px 6px', fontSize: '0.7rem', background: 'var(--red)', color: '#fff' }}
+                                    onClick={() => setWsExistingAttachments(prev => prev.filter(a => a !== att))}
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* New uploads */}
+                    <div>
+                      <h4 style={{ fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '8px', textTransform: 'uppercase' }}>New Uploads ({wsImages.length})</h4>
+                      {wsImages.length === 0 ? (
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>No new files added.</span>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {wsImages.map((file, i) => {
+                            const tempUrl = URL.createObjectURL(file);
+                            return (
+                              <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', border: '1px solid var(--panel-border)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
+                                  <img src={tempUrl} alt={file.name} style={{ width: '32px', height: '32px', borderRadius: '4px', objectFit: 'cover', border: '1px solid var(--border-color)' }} />
+                                  <span style={{ fontSize: '0.75rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={file.name}>{file.name}</span>
+                                </div>
+                                <div style={{ display: 'flex', gap: '6px' }}>
+                                  <button 
+                                    className="btn btn-secondary" 
+                                    style={{ padding: '2px 6px', fontSize: '0.7rem' }}
+                                    onClick={() => setWsAnswer(prev => prev + `\n![${file.name.split('.')[0]}](assets/${file.name})`)}
+                                  >
+                                    Insert Ref
+                                  </button>
+                                  <button 
+                                    className="btn btn-danger" 
+                                    style={{ padding: '2px 6px', fontSize: '0.7rem', background: 'var(--red)', color: '#fff' }}
+                                    onClick={() => setWsImages(prev => prev.filter((_, idx) => idx !== i))}
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '12px' }}>
+              <button 
+                className="btn btn-primary" 
+                onClick={handleSaveWorkspaceCard}
+                disabled={isSavingWs}
+              >
+                {isSavingWs ? "Saving..." : "Save Card Edits"}
+              </button>
+            </div>
+          </main>
+        </div>
+      </div>
+    );
+  };
+
+  const renderEnvSettingsView = () => {
+    return (
+      <div className="app-container">
+        <header className="app-header glass-panel">
+          <div className="logo-container" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <img src="/icon.png" alt="MindLoop Logo" style={{ height: '32px', width: '32px', borderRadius: '6px' }} />
+            <h1 className="logo-text">MindLoop / Environment Settings (.env)</h1>
+          </div>
+          <button className="btn btn-secondary" onClick={() => setCurrentView('sync-center')}>
+            Back to Sync Center
+          </button>
+        </header>
+
+        <div style={{ padding: '0 24px 24px 24px', width: '92vw', maxWidth: '92vw', margin: '0 auto' }}>
+          <section className="glass-panel" style={{ padding: '32px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h2>Environment Variables (.env File Configuration)</h2>
+              <button 
+                className="btn btn-primary" 
+                onClick={handleSaveEnvConfig}
+                disabled={isEnvSaving}
+              >
+                {isEnvSaving ? "Saving..." : "Save .env Configuration"}
+              </button>
+            </div>
+
+            {envFilePath && (
+              <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.05)', padding: '10px 14px', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
+                <strong>Target .env File Path:</strong> <code style={{ color: 'var(--cyan)' }}>{envFilePath}</code>
+              </div>
+            )}
+
+            {envMessage && (
+              <div style={{ 
+                padding: '12px 16px', 
+                borderRadius: '8px', 
+                fontWeight: 'bold',
+                background: envMessage.startsWith('✅') ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
+                border: `2px solid ${envMessage.startsWith('✅') ? 'var(--success)' : 'var(--red)'}`,
+                color: envMessage.startsWith('✅') ? 'var(--success)' : 'var(--red)'
+              }}>
+                {envMessage}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <label style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>
+                Raw .env Configuration Text Editor:
+              </label>
+              <textarea 
+                rows={16}
+                value={envRawText}
+                onChange={(e) => setEnvRawText(e.target.value)}
+                placeholder="HOST=0.0.0.0&#10;PORT=6769&#10;GEMINI_API_KEY=your_api_key_here&#10;GEMINI_MODEL=gemma-4-31b-it&#10;STORAGE_DIR=./storage"
+                style={{
+                  width: '100%',
+                  fontFamily: 'Fira Code, JetBrains Mono, monospace',
+                  fontSize: '0.95rem',
+                  lineHeight: '1.6',
+                  background: '#090d16',
+                  color: '#38bdf8',
+                  padding: '16px',
+                  borderRadius: '8px',
+                  border: '2px solid var(--border-color)',
+                  boxShadow: '4px 4px 0px var(--shadow-color)'
+                }}
+              />
+            </div>
+          </section>
+        </div>
+      </div>
+    );
+  };
+
   if (currentView === 'pc-manage') {
     return renderPcManageView();
   }
@@ -1095,6 +1640,12 @@ function App() {
   }
   if (currentView === 'workspace') {
     return renderWorkspaceView();
+  }
+  if (currentView === 'generated-review') {
+    return renderGeneratedReviewView();
+  }
+  if (currentView === 'env-settings') {
+    return renderEnvSettingsView();
   }
 
   return (
@@ -1128,6 +1679,11 @@ function App() {
           <button className="btn btn-secondary" onClick={() => setShowGeneratorModal(true)} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Plus size={18} />
             Generate Flashcards
+          </button>
+
+          <button className="btn btn-secondary" onClick={() => { fetchEnvConfig(); setCurrentView('env-settings'); }} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Sliders size={18} />
+            Env Config
           </button>
 
           <button className="btn btn-primary" onClick={handleOpenPairing}>
@@ -1275,7 +1831,7 @@ function App() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', borderLeft: '1px solid var(--panel-border)', paddingLeft: '16px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '0 4px' }}>
                 <h3 style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
-                  Phone Storage {activeDevice ? `(${visiblePhoneCards.length})` : ''}
+                  Phone Storage {activeDevice ? `(${filteredPhoneCards.length})` : ''}
                 </h3>
                 {activeDevice && (
                   <button className="btn" style={{ padding: '2px 8px', fontSize: '0.75rem', border: '1.5px solid var(--border-color)', boxShadow: '1.5px 1.5px 0px var(--shadow-color)', textTransform: 'uppercase' }} onClick={() => setCurrentView('phone-manage')}>
@@ -1284,12 +1840,34 @@ function App() {
                 )}
               </div>
               
+              {activeDevice && (
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '4px' }}>
+                  <input 
+                    type="text" 
+                    placeholder="Search phone cards..." 
+                    value={phoneSearchQuery}
+                    onChange={(e) => setPhoneSearchQuery(e.target.value)}
+                    style={{ flex: 1 }}
+                  />
+                  <select
+                    value={phoneFilterTag}
+                    onChange={(e) => setPhoneFilterTag(e.target.value)}
+                    style={{ maxWidth: '140px' }}
+                  >
+                    <option value="All">All Tags</option>
+                    {phoneTags.map((tag, idx) => (
+                      <option key={idx} value={tag}>{tag}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               {activeDevice ? (
-                <div className="cards-list" style={{ height: '528px', overflowY: 'auto' }}>
-                  {visiblePhoneCards.length === 0 ? (
-                    <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>No cards synced to phone.</div>
+                <div className="cards-list" style={{ height: '480px', overflowY: 'auto' }}>
+                  {filteredPhoneCards.length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>No cards found.</div>
                   ) : (
-                    visiblePhoneCards.map(card => (
+                    filteredPhoneCards.map(card => (
                       <div 
                         key={card.id} 
                         className="flashcard-row" 
@@ -1300,7 +1878,17 @@ function App() {
                           <span className="card-question" title={card.question}>{card.question}</span>
                           <span className="tag-badge">Synced</span>
                         </div>
-                        <CheckCircle2 color="var(--success)" size={18} />
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }} onClick={e => e.stopPropagation()}>
+                          <CheckCircle2 color="var(--success)" size={18} />
+                          <button 
+                            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+                            onClick={() => handleDeletePhoneCard(card.id)}
+                            className="hover-danger"
+                            title="Delete card from phone"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
                       </div>
                     ))
                   )}
@@ -1377,7 +1965,7 @@ function App() {
       {/* PDF Generator Modal */}
       {showGeneratorModal && (
         <div className="modal-overlay" onClick={() => !isGenerating && setShowGeneratorModal(false)}>
-          <div className="modal-content glass-panel" style={{ maxWidth: '550px', width: '90%' }} onClick={e => e.stopPropagation()}>
+          <div className="modal-content glass-panel" style={{ width: '90vw', maxWidth: '1100px', height: '85vh', maxHeight: '90vh', padding: '32px', display: 'flex', flexDirection: 'column', textAlign: 'left', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
               <h3 style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '1.25rem', margin: 0, fontWeight: '700' }}>
                 <FileText color="var(--primary)" size={22} />
@@ -1422,15 +2010,15 @@ function App() {
               onDragLeave={handleDrag}
               onDrop={handleDrop}
               onClick={() => !isGenerating && fileInputRef.current.click()}
-              style={{ pointerEvents: isGenerating ? 'none' : 'auto', marginBottom: '16px' }}
+              style={{ pointerEvents: isGenerating ? 'none' : 'auto', marginBottom: '16px', minHeight: '180px', flex: 1, justifyContent: 'center' }}
             >
-              <FileUp size={40} color={isGenerating ? 'var(--primary)' : 'var(--text-secondary)'} style={{ animation: isGenerating ? 'pulse 2s infinite' : 'none' }} />
+              <FileUp size={48} color={isGenerating ? 'var(--primary)' : 'var(--text-secondary)'} style={{ animation: isGenerating ? 'pulse 2s infinite' : 'none' }} />
               {isGenerating ? (
-                <span style={{ fontWeight: '600', color: 'var(--primary)' }}>Analyzing PDF with Multimodal AI ({selectedModel})...</span>
+                <span style={{ fontWeight: '600', color: 'var(--primary)', fontSize: '1rem' }}>Analyzing PDF with Multimodal AI ({selectedModel})...</span>
               ) : (
                 <>
-                  <span style={{ fontWeight: '600' }}>Drag & Drop PDF or Click to Browse</span>
-                  <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Supports text, figures, equations, diagrams</span>
+                  <span style={{ fontWeight: '600', fontSize: '1.1rem' }}>Drag & Drop PDF or Click to Browse</span>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Supports text, figures, equations, diagrams</span>
                 </>
               )}
               <input 
@@ -1447,13 +2035,14 @@ function App() {
             {generationLogs && (
               <div style={{ 
                 background: 'rgba(0,0,0,0.3)', 
-                padding: '12px', 
+                padding: '16px', 
                 borderRadius: '8px', 
-                fontSize: '0.75rem', 
+                fontSize: '0.8rem', 
                 fontFamily: 'JetBrains Mono, monospace',
                 color: 'var(--text-secondary)',
                 whiteSpace: 'pre-wrap',
-                maxHeight: '120px',
+                maxHeight: '260px',
+                flex: 1,
                 overflowY: 'auto',
                 border: '1px solid var(--panel-border)',
                 textAlign: 'left',
@@ -1478,52 +2067,67 @@ function App() {
       {/* Flashcard Detail Modal */}
       {selectedCard && (
         <div className="modal-overlay" onClick={() => setSelectedCard(null)}>
-          <div className="modal-content glass-panel" style={{ maxWidth: '650px', textAlign: 'left', width: '90%' }} onClick={e => e.stopPropagation()}>
+          <div className="modal-content glass-panel" style={{ width: '92vw', maxWidth: '1400px', height: '90vh', maxHeight: '90vh', padding: '32px', display: 'flex', flexDirection: 'column', textAlign: 'left', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-              <span className="tag-badge primary" style={{ margin: 0 }}>
+              <span className="tag-badge primary" style={{ margin: 0, fontSize: '0.9rem', padding: '6px 12px' }}>
                 {selectedCard.source_pdf}
               </span>
               <button 
-                style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '1.5rem', lineHeight: 1 }}
+                style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '1.8rem', lineHeight: 1 }}
                 onClick={() => setSelectedCard(null)}
               >
                 &times;
               </button>
             </div>
 
-            <h3 style={{ fontSize: '1.2rem', fontWeight: '700', color: '#fff', marginBottom: '12px', lineHeight: 1.4 }}>
+            <h3 style={{ fontSize: '1.6rem', fontWeight: '800', color: '#fff', marginBottom: '14px', lineHeight: 1.35 }}>
               {selectedCard.question}
             </h3>
 
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '20px' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '20px' }}>
               {selectedCard.tags && selectedCard.tags.map((t, i) => (
-                <span key={i} className="tag-badge">{t}</span>
+                <span key={i} className="tag-badge" style={{ fontSize: '0.85rem', padding: '4px 10px' }}>#{t}</span>
               ))}
               {selectedCard.pdf_page && (
-                <span className="tag-badge" style={{ borderColor: 'var(--primary)', color: 'var(--primary)' }}>Page {selectedCard.pdf_page}</span>
+                <span className="tag-badge" style={{ borderColor: 'var(--primary)', color: 'var(--primary)', fontSize: '0.85rem', padding: '4px 10px' }}>Page {selectedCard.pdf_page}</span>
               )}
             </div>
 
             <div style={{ 
-              maxHeight: '380px', 
+              flex: 1, 
               overflowY: 'auto', 
-              padding: '16px', 
-              background: 'rgba(0,0,0,0.2)', 
-              borderRadius: '8px',
-              border: '1px solid var(--panel-border)',
+              padding: '28px', 
+              background: 'rgba(0,0,0,0.25)', 
+              borderRadius: '12px',
+              border: '2px solid var(--border-color)',
               marginBottom: '20px'
             }}>
               {isLoadingContent ? (
-                <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)' }}>Loading flashcard details...</div>
+                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)', fontSize: '1.1rem' }}>Loading flashcard details...</div>
               ) : cardContent ? (
                 <MarkdownRenderer content={cardContent.answer} cardId={selectedCard.id} />
               ) : (
-                <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)' }}>Failed to load flashcard.</div>
+                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)', fontSize: '1.1rem' }}>Failed to load flashcard.</div>
               )}
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
-              <button className="btn btn-secondary" onClick={() => setSelectedCard(null)}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+              <button 
+                className="btn btn-primary" 
+                style={{ padding: '10px 20px', fontSize: '0.95rem' }}
+                onClick={() => {
+                  const cardToEdit = selectedCard;
+                  setSelectedCard(null);
+                  handleEnterEditWorkspace(cardToEdit);
+                }}
+              >
+                Edit in Workspace
+              </button>
+              <button 
+                className="btn btn-secondary" 
+                style={{ padding: '10px 20px', fontSize: '0.95rem' }}
+                onClick={() => setSelectedCard(null)}
+              >
                 Close
               </button>
             </div>

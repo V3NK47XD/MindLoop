@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest_all.dart' as tz;
@@ -24,12 +23,12 @@ class NotificationService {
     // 1. Initialize Timezones
     tz.initializeTimeZones();
     try {
-      final timeZoneInfo = await FlutterTimezone.getLocalTimezone();
-      final String timeZoneName = timeZoneInfo.identifier;
+      final dynamic tzRes = await FlutterTimezone.getLocalTimezone();
+      final String timeZoneName = tzRes is String ? tzRes : tzRes.toString();
       tz.setLocalLocation(tz.getLocation(timeZoneName));
       print("Local timezone initialized: $timeZoneName");
     } catch (e) {
-      print("Could not initialize local timezone, defaulting to UTC: $e");
+      print("Could not initialize local timezone: $e");
     }
 
     // 2. Android Initialization
@@ -68,11 +67,31 @@ class NotificationService {
     await androidPlugin?.requestExactAlarmsPermission();
   }
 
-  // Read background alert schedule history and synchronize the checklist progression
+  // Normalize a tag string for consistent comparison
+  static String _normalizeTag(String tag) => tag.trim().toLowerCase();
+
+  // Get cards matching a tag (case-insensitive, trimmed)
+  static List<Flashcard> _cardsForTag(List<Flashcard> cards, String tag) {
+    final normalizedTag = _normalizeTag(tag);
+    return cards.where((c) => c.tags.any((t) => _normalizeTag(t) == normalizedTag)).toList();
+  }
+
+  // Process scheduled notifications in SQLite whose scheduled_time has elapsed
   Future<void> updateNotificationProgress() async {
     final prefs = await SharedPreferences.getInstance();
     final cards = await StorageService().getAllCards();
     if (cards.isEmpty) return;
+
+    final countsRaw = prefs.getString('card_view_counts');
+    Map<String, int> counts = {};
+    if (countsRaw != null) {
+      try {
+        final Map<String, dynamic> decoded = jsonDecode(countsRaw);
+        decoded.forEach((key, val) {
+          if (val is int) counts[key] = val;
+        });
+      } catch (_) {}
+    }
 
     final allHashtags = cards
         .expand((c) => c.tags)
@@ -85,112 +104,102 @@ class NotificationService {
     List<String> shuffledTags = prefs.getStringList('shuffled_hashtags') ?? [];
     List<String> completedTags = prefs.getStringList('completed_hashtags') ?? [];
 
-    // Reconcile active tag set
-    final setA = allHashtags.toSet();
-    final setB = shuffledTags.toSet();
+    // Filter out orphan tags that no longer exist in current cards
+    shuffledTags = shuffledTags.where((tag) => _cardsForTag(cards, tag).isNotEmpty).toList();
+    completedTags = completedTags.where((tag) => _cardsForTag(cards, tag).isNotEmpty).toList();
+
+    // Reconcile tag set
+    final setA = allHashtags.map(_normalizeTag).toSet();
+    final setB = shuffledTags.map(_normalizeTag).toSet();
     if (setA.length != setB.length || !setA.containsAll(setB)) {
       shuffledTags = List<String>.from(allHashtags)..shuffle();
       completedTags = [];
-      await prefs.setStringList('shuffled_hashtags', shuffledTags);
-      await prefs.setStringList('completed_hashtags', completedTags);
+      await prefs.setInt('global_rotation_step_pointer', 0);
     }
 
-    final slotsRaw = prefs.getString('scheduled_slots');
-    if (slotsRaw != null) {
-      try {
-        final List<dynamic> oldSlots = jsonDecode(slotsRaw);
-        final now = DateTime.now();
-        List<dynamic> remainingSlots = [];
-        bool changed = false;
-
-        for (final slot in oldSlots) {
-          final timeStr = slot['time'] as String;
-          final time = DateTime.parse(timeStr);
-          if (time.isBefore(now)) {
-            final tag = slot['tag'] as String;
-            final isLast = slot['is_last_for_tag'] as bool? ?? false;
-            if (isLast) {
-              if (!completedTags.contains(tag)) {
-                completedTags.add(tag);
-                changed = true;
-              }
-            }
-          } else {
-            remainingSlots.add(slot);
-          }
+    // Auto-mark tags as completed if all their cards have view_count > 0
+    for (final tag in shuffledTags) {
+      final tagCards = _cardsForTag(cards, tag);
+      if (tagCards.isNotEmpty && tagCards.every((c) => (counts[c.id] ?? 0) > 0)) {
+        if (!completedTags.contains(tag)) {
+          completedTags.add(tag);
         }
+      }
+    }
 
-        // Reset round if all tags are marked completed
-        if (completedTags.length >= shuffledTags.length && shuffledTags.isNotEmpty) {
-          completedTags = [];
-          shuffledTags.shuffle();
-          changed = true;
-        }
+    // Reset round if all tags are marked completed
+    if (completedTags.length >= shuffledTags.length && shuffledTags.isNotEmpty) {
+      completedTags = [];
+      shuffledTags.shuffle();
+      await prefs.setInt('global_rotation_step_pointer', 0);
+    }
 
-        if (changed || remainingSlots.length != oldSlots.length) {
-          await prefs.setStringList('shuffled_hashtags', shuffledTags);
-          await prefs.setStringList('completed_hashtags', completedTags);
-          await prefs.setString('scheduled_slots', jsonEncode(remainingSlots));
-        }
-      } catch (e) {
-        print("Error updating notification progress: $e");
+    await prefs.setStringList('shuffled_hashtags', shuffledTags);
+    await prefs.setStringList('completed_hashtags', completedTags);
+
+    // Process pending scheduled notifications in SQLite
+    final pendingList = await StorageService().getScheduledNotifications(pendingOnly: true);
+    final now = DateTime.now();
+
+    for (final item in pendingList) {
+      final timeStr = item['scheduled_time'] as String;
+      final scheduledTime = DateTime.parse(timeStr);
+      if (scheduledTime.isBefore(now)) {
+        final id = item['id'] as int;
+        final cardId = item['card_id'] as String;
+        final title = item['title'] as String;
+        final body = item['body'] as String;
+
+        // Mark as sent in SQLite
+        await StorageService().markScheduledNotificationSent(id);
+
+        // Log into notifications_history
+        await StorageService().logNotification(cardId, title, body, scheduledTime);
       }
     }
   }
 
-  // Schedule rotational hashtag reminders covering the next 7 days (capped at 48 safety limit)
-  Future<void> rescheduleReminders(int frequencyHours) async {
-    // 1. Process past alerts to synchronize checklist state
-    await updateNotificationProgress();
+  // Schedule rotational hashtag reminders into SQLite scheduled_notifications table & Flutter Local Notifications plugin
+  // Cycle contains EXACTLY 1 slot per flashcard (e.g. 12 cards = 12 records), grouped by tag.
+  Future<void> rescheduleReminders(int frequencyHours, {bool forceReset = false}) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (forceReset) {
+      await prefs.setStringList('completed_hashtags', []);
+    }
 
-    // 2. Cancel all scheduled alerts
+    // 1. Clear pending schedule queue in SQLite (preserves sent history unless forceReset = true)
+    await StorageService().clearScheduledNotifications(clearSent: forceReset);
     await _notificationsPlugin.cancelAll();
     await StorageService().clearFutureNotifications();
-    
+
     if (frequencyHours <= 0) {
       print("Reminders disabled (frequency set to 0).");
       return;
     }
 
-    // 3. Get all cards
+    // 2. Load cards
     final cards = await StorageService().getAllCards();
     if (cards.isEmpty) {
       print("No cards available to schedule reminders.");
       return;
     }
 
-    final prefs = await SharedPreferences.getInstance();
     List<String> shuffledTags = prefs.getStringList('shuffled_hashtags') ?? [];
     List<String> completedTags = prefs.getStringList('completed_hashtags') ?? [];
 
-    final allHashtags = cards
-        .expand((c) => c.tags)
-        .map((t) => t.trim())
-        .where((t) => t.isNotEmpty)
-        .toSet()
-        .toList();
-    allHashtags.sort();
-
-    // Reconcile active tag set
-    final setA = allHashtags.toSet();
-    final setB = shuffledTags.toSet();
-    if (setA.length != setB.length || !setA.containsAll(setB)) {
-      shuffledTags = List<String>.from(allHashtags)..shuffle();
+    List<String> activeTags = shuffledTags.where((t) => !completedTags.contains(t)).toList();
+    if (activeTags.isEmpty && shuffledTags.isNotEmpty) {
       completedTags = [];
-      await prefs.setStringList('shuffled_hashtags', shuffledTags);
+      activeTags = List<String>.from(shuffledTags);
       await prefs.setStringList('completed_hashtags', completedTags);
     }
 
-    if (shuffledTags.isEmpty) {
-      print("No hashtags found to schedule reminders.");
+    if (activeTags.isEmpty) {
+      print("No active hashtags found to schedule reminders.");
       return;
     }
 
-    // 4. Calculate total slots for 7 days
-    int slotsCount = (7 * 24 / frequencyHours).floor();
-    if (slotsCount > 48) slotsCount = 48; // Android safety cap
-
-    final androidDetails = const AndroidNotificationDetails(
+    const androidDetails = AndroidNotificationDetails(
       'mindloop_reminders',
       'MindLoop Reminders',
       channelDescription: 'Rotational hashtag flashcard alerts',
@@ -199,138 +208,226 @@ class NotificationService {
       playSound: true,
       largeIcon: DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
     );
-    final iosDetails = const DarwinNotificationDetails(
+    const iosDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentBadge: true,
       presentSound: true,
     );
-    final notificationDetails = NotificationDetails(android: androidDetails, iOS: iosDetails);
+    const notificationDetails = NotificationDetails(android: androidDetails, iOS: iosDetails);
 
-    // 5. Generate rotational schedule sequence
-    List<Map<String, dynamic>> scheduledSlotsData = [];
-    List<String> localCompleted = List<String>.from(completedTags);
-    List<String> localShuffled = List<String>.from(shuffledTags);
-    
-    // Map of tag -> list of cards left to schedule in this round
-    Map<String, List<Flashcard>> tagCardQueues = {};
-    int slotIndex = 1;
+    final countsRaw = prefs.getString('card_view_counts');
+    Map<String, int> counts = {};
+    if (countsRaw != null) {
+      try {
+        final Map<String, dynamic> decoded = jsonDecode(countsRaw);
+        decoded.forEach((key, val) {
+          if (val is int) counts[key] = val;
+        });
+      } catch (_) {}
+    }
 
-    print("Scheduling next $slotsCount reminders, every $frequencyHours hours...");
+    // Read existing items in SQLite to preserve sent history
+    final existingItems = await StorageService().getScheduledNotifications();
+    final Set<String> processedCardIds = existingItems
+        .where((i) => i['status'] == 'sent')
+        .map((i) => i['card_id'] as String)
+        .toSet();
 
-    while (slotIndex <= slotsCount) {
-      // Check if current round is fully complete
-      if (localCompleted.length >= localShuffled.length && localShuffled.isNotEmpty) {
-        localCompleted.clear();
-        localShuffled.shuffle();
+    int maxSentOrder = 0;
+    for (final item in existingItems) {
+      if (item['status'] == 'sent') {
+        final order = item['slot_order'] as int? ?? 0;
+        if (order > maxSentOrder) maxSentOrder = order;
       }
+    }
 
-      // Find the next incomplete tag
-      String? activeTag;
-      for (final tag in localShuffled) {
-        if (!localCompleted.contains(tag)) {
-          activeTag = tag;
-          break;
+    // Group remaining un-sent flashcards by tag in active tag rotation order
+    List<Map<String, dynamic>> scheduledItems = [];
+
+    for (final tag in activeTags) {
+      final tagCards = _cardsForTag(cards, tag);
+      tagCards.sort((a, b) {
+        final viewA = counts[a.id] ?? 0;
+        final viewB = counts[b.id] ?? 0;
+        if (viewA != viewB) return viewA.compareTo(viewB);
+        return a.id.compareTo(b.id);
+      });
+
+      for (final card in tagCards) {
+        if (!processedCardIds.contains(card.id)) {
+          processedCardIds.add(card.id);
+          scheduledItems.add({
+            'card': card,
+            'tag': tag,
+          });
         }
       }
+    }
 
-      if (activeTag == null) {
-        break;
+    // Include any remaining cards not covered by activeTags
+    for (final card in cards) {
+      if (!processedCardIds.contains(card.id)) {
+        processedCardIds.add(card.id);
+        final firstTag = card.tags.isNotEmpty ? card.tags.first.trim() : 'general';
+        scheduledItems.add({
+          'card': card,
+          'tag': firstTag,
+        });
       }
+    }
 
-      // Fill card queue for activeTag if empty
-      if (!tagCardQueues.containsKey(activeTag) || tagCardQueues[activeTag]!.isEmpty) {
-        final tagCards = cards.where((c) => c.tags.contains(activeTag)).toList();
-        tagCards.shuffle();
-        tagCardQueues[activeTag] = tagCards;
-      }
+    print("Building remaining cycle schedule of ${scheduledItems.length} notifications (starting slot #${maxSentOrder + 1})...");
 
-      final queue = tagCardQueues[activeTag]!;
-      if (queue.isEmpty) {
-        // Tag has no cards, mark completed and proceed
-        localCompleted.add(activeTag);
-        continue;
-      }
+    List<Map<String, dynamic>> sqliteSlots = [];
+    for (int i = 0; i < scheduledItems.length; i++) {
+      final slotIndex = maxSentOrder + i + 1;
+      final item = scheduledItems[i];
+      final card = item['card'] as Flashcard;
+      final tag = item['tag'] as String;
 
-      final card = queue.removeLast();
-      final scheduledTime = tz.TZDateTime.now(tz.local).add(Duration(hours: frequencyHours * slotIndex));
+      final scheduledTime = tz.TZDateTime.now(tz.local).add(Duration(hours: frequencyHours * (i + 1)));
+      final title = 'MindLoop Review - #$tag';
+      final body = card.question;
 
-      // Is this the last card in queue for this tag?
-      final bool isLast = queue.isEmpty;
-
-      // Schedule local notification
+      // Local plugin schedule
       await _notificationsPlugin.zonedSchedule(
         id: slotIndex,
-        title: 'MindLoop Review - #$activeTag',
-        body: card.question,
+        title: title,
+        body: body,
         scheduledDate: scheduledTime,
         notificationDetails: notificationDetails,
         androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
         payload: card.id,
       );
 
-      // Log notification history
-      await StorageService().logNotification(
-        card.id,
-        'MindLoop Review - #$activeTag',
-        card.question,
-        scheduledTime,
-      );
-
-      scheduledSlotsData.add({
-        'time': scheduledTime.toIso8601String(),
-        'tag': activeTag,
-        'is_last_for_tag': isLast,
+      // Data for SQLite scheduled_notifications table
+      sqliteSlots.add({
+        'notification_id': slotIndex,
+        'card_id': card.id,
+        'tag': tag,
+        'title': title,
+        'body': body,
+        'scheduled_time': scheduledTime.toIso8601String(),
+        'slot_order': slotIndex,
+        'status': 'pending',
       });
-
-      if (isLast) {
-        localCompleted.add(activeTag);
-      }
-
-      print("Scheduled reminder #$slotIndex at $scheduledTime (Tag: $activeTag | Card: ${card.id})");
-      slotIndex++;
     }
 
-    // Save scheduled slots and updated states
-    await prefs.setString('scheduled_slots', jsonEncode(scheduledSlotsData));
-    await prefs.setStringList('shuffled_hashtags', shuffledTags);
-    await prefs.setStringList('completed_hashtags', completedTags);
+    // 4. Add CYCLE_END_SENTINEL dummy record at the end of the cycle queue
+    final sentinelSlotOrder = maxSentOrder + scheduledItems.length + 1;
+    final sentinelTime = tz.TZDateTime.now(tz.local).add(Duration(hours: frequencyHours * (scheduledItems.length + 1)));
+    sqliteSlots.add({
+      'notification_id': 99999,
+      'card_id': 'CYCLE_END_SENTINEL',
+      'tag': 'CYCLE_END',
+      'title': 'Cycle Complete',
+      'body': 'All flashcards for this cycle have been reviewed!',
+      'scheduled_time': sentinelTime.toIso8601String(),
+      'slot_order': sentinelSlotOrder,
+      'status': 'pending',
+    });
+
+    // Save batch to SQLite scheduled_notifications table
+    if (sqliteSlots.isNotEmpty) {
+      await StorageService().saveScheduledNotificationsBatch(sqliteSlots);
+    }
+    print("Saved ${sqliteSlots.length} pending items (including sentinel) to scheduled_notifications table in SQLite.");
   }
 
-  // Helper to schedule a test notification after 5 seconds
-  Future<void> scheduleTestNotificationAfter5Seconds(String title, String body, String payload) async {
-    const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
-      'mindloop_test',
-      'Test Channel',
+  // "Send Next Notification" logic:
+  // Reads the next pending notification pointer from scheduled_notifications table in SQLite.
+  // Cancels its plugin background timer, fires it in 5s, updates status to 'sent', and advances pointer.
+  Future<Flashcard?> scheduleNextNotificationAfter5Seconds() async {
+    await updateNotificationProgress();
+
+    final prefs = await SharedPreferences.getInstance();
+    final frequencyHours = prefs.getInt('notification_frequency') ?? 3;
+
+    // Fetch the single next pending notification from SQLite table pointer
+    Map<String, dynamic>? nextItem = await StorageService().getNextPendingScheduledNotification();
+
+    // If queue is empty OR if next item is the CYCLE_END_SENTINEL dummy record, auto-renew cycle!
+    if (nextItem == null || nextItem['card_id'] == 'CYCLE_END_SENTINEL') {
+      print("Reached end of scheduled notifications cycle. Auto-renewing for new cycle...");
+      if (nextItem != null && nextItem['id'] != null) {
+        await StorageService().markScheduledNotificationSent(nextItem['id'] as int);
+      }
+      await rescheduleReminders(frequencyHours > 0 ? frequencyHours : 3, forceReset: true);
+      nextItem = await StorageService().getNextPendingScheduledNotification();
+    }
+
+    if (nextItem == null || nextItem['card_id'] == 'CYCLE_END_SENTINEL') return null;
+
+    final int rowId = nextItem['id'] as int;
+    final int notificationId = nextItem['notification_id'] as int;
+    final String cardId = nextItem['card_id'] as String;
+    final String tag = nextItem['tag'] as String;
+    final String title = nextItem['title'] as String;
+    final String body = nextItem['body'] as String;
+
+    // 1. Remove background alert from plugin queue
+    await _notificationsPlugin.cancel(id: notificationId);
+
+    // 2. Schedule test alert to fire in 5 seconds
+    const androidDetails = AndroidNotificationDetails(
+      'mindloop_reminders',
+      'MindLoop Reminders',
+      channelDescription: 'Rotational hashtag flashcard alerts',
       importance: Importance.max,
       priority: Priority.max,
+      playSound: true,
       largeIcon: DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
     );
-    const DarwinNotificationDetails iosDetails = DarwinNotificationDetails(
+    const iosDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentBadge: true,
       presentSound: true,
     );
-    const NotificationDetails details = NotificationDetails(android: androidDetails, iOS: iosDetails);
-    
+    const notificationDetails = NotificationDetails(android: androidDetails, iOS: iosDetails);
+
     final scheduledTime = tz.TZDateTime.now(tz.local).add(const Duration(seconds: 5));
-    
-    await _notificationsPlugin.zonedSchedule(
-      id: 999,
-      title: title,
-      body: body,
-      scheduledDate: scheduledTime,
-      notificationDetails: details,
-      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-      payload: payload,
-    );
-    
-    // Log test notification in history
-    await StorageService().logNotification(
-      payload,
-      title,
-      body,
-      scheduledTime,
-    );
-    print("Scheduled test notification to fire in 5 seconds at: $scheduledTime");
+    final testAlertId = DateTime.now().millisecondsSinceEpoch % 100000;
+
+    try {
+      await _notificationsPlugin.zonedSchedule(
+        id: testAlertId,
+        title: title,
+        body: body,
+        scheduledDate: scheduledTime,
+        notificationDetails: notificationDetails,
+        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+        payload: cardId,
+      );
+    } catch (e) {
+      print("zonedSchedule failed: $e. Falling back to Timer + show()...");
+    }
+
+    // Fallback Timer to guarantee delivery after 5 seconds even if zonedSchedule is restricted by OS
+    Timer(const Duration(seconds: 5), () async {
+      try {
+        await _notificationsPlugin.show(
+          id: testAlertId,
+          title: title,
+          body: body,
+          notificationDetails: notificationDetails,
+          payload: cardId,
+        );
+      } catch (err) {
+        print("Fallback show error: $err");
+      }
+    });
+
+    // 3. Mark row as 'sent' in SQLite scheduled_notifications table (advances the pointer)
+    await StorageService().markScheduledNotificationSent(rowId);
+
+    // 4. Log to notifications_history table
+    await StorageService().logNotification(cardId, title, body, scheduledTime);
+
+    // 5. Update global rotation step pointer for UI NEXT tag sync
+    int stepPointer = prefs.getInt('global_rotation_step_pointer') ?? 0;
+    await prefs.setInt('global_rotation_step_pointer', stepPointer + 1);
+
+    print("Next notification sent from SQLite queue (Row #$rowId | Tag #$tag | Card: $cardId). Firing in 5s!");
+    return await StorageService().getCardById(cardId);
   }
 }

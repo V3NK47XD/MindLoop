@@ -1,8 +1,9 @@
 import zipfile
 import json
 import logging
+import shutil
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, File, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Dict, List, Set
@@ -11,15 +12,27 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
-# In-memory storage for device library states and sync queues
-# device_libraries: { device_id: set(card_hashes) }
-device_libraries: Dict[str, Set[str]] = {}
+from typing import Dict, List, Set, Optional
 
-# device_sync_queues: { device_id: list(card_hashes_to_sync) }
+# In-memory storage for device library states, sync queues, prune queues, and metadata cache
+device_libraries: Dict[str, Set[str]] = {}
 device_sync_queues: Dict[str, List[str]] = {}
+device_sync_prunes: Dict[str, List[str]] = {}
+device_metadata_cache: Dict[str, Dict[str, dict]] = {}
+
+class CardMetadataItem(BaseModel):
+    id: str
+    question: str
+    answer: Optional[str] = ""
+    created_at: Optional[str] = None
+    tags: Optional[List[str]] = None
+    source_pdf: Optional[str] = None
+    pdf_page: Optional[int] = 0
+    attachments: Optional[List[str]] = None
 
 class LibraryStateRequest(BaseModel):
-    card_hashes: List[str]
+    card_hashes: Optional[List[str]] = None
+    cards_metadata: Optional[List[CardMetadataItem]] = None
 
 class QueueSyncRequest(BaseModel):
     card_hashes: List[str]
@@ -46,9 +59,25 @@ def get_pc_library() -> List[dict]:
 
 @router.post("/device/{device_id}/library")
 def update_device_library(device_id: str, req: LibraryStateRequest):
-    """The mobile phone calls this to upload its current list of card hashes."""
-    device_libraries[device_id] = set(req.card_hashes)
-    logger.info(f"Updated library state for device {device_id} with {len(req.card_hashes)} cards.")
+    """The mobile phone calls this to upload its current list of card hashes and metadata."""
+    hashes = set()
+    metadata_map = {}
+    
+    if req.cards_metadata:
+        for item in req.cards_metadata:
+            hashes.add(item.id)
+            metadata_map[item.id] = item.dict()
+    if req.card_hashes:
+        for h in req.card_hashes:
+            hashes.add(h)
+
+    device_libraries[device_id] = hashes
+    if metadata_map:
+        if device_id not in device_metadata_cache:
+            device_metadata_cache[device_id] = {}
+        device_metadata_cache[device_id].update(metadata_map)
+    
+    logger.info(f"Updated library state for device {device_id} with {len(hashes)} cards.")
     
     # Initialize queue for this device if not exists
     if device_id not in device_sync_queues:
@@ -57,7 +86,7 @@ def update_device_library(device_id: str, req: LibraryStateRequest):
     from app.routers.pairing import notify_listeners
     notify_listeners()
         
-    return {"status": "success", "count": len(req.card_hashes)}
+    return {"status": "success", "count": len(hashes)}
 
 @router.get("/device/{device_id}/compare")
 def compare_libraries(device_id: str):
@@ -67,6 +96,7 @@ def compare_libraries(device_id: str):
     """
     pc_cards = get_pc_library()
     phone_hashes = device_libraries.get(device_id, set())
+    phone_meta = device_metadata_cache.get(device_id, {})
     
     # Enrich PC cards with sync status
     enriched_pc_cards = []
@@ -79,12 +109,12 @@ def compare_libraries(device_id: str):
             "sync_status": "synced" if is_synced else "only_pc"
         })
         
-    # Also compile cards that are ONLY on the phone (if any exist, e.g. local edits/creation)
+    # Also compile cards that are on the phone
     pc_hashes = {card["id"] for card in pc_cards}
     only_phone_hashes = phone_hashes - pc_hashes
     
     phone_cards = []
-    # For common cards, we already show details on PC side, but list them for the comparison UI
+    # For common cards, use PC metadata
     for card in pc_cards:
         card_hash = card["id"]
         if card_hash in phone_hashes:
@@ -98,14 +128,26 @@ def compare_libraries(device_id: str):
                 "pdf_page": card.get("pdf_page")
             })
             
-    # Add items unique to phone (will lack full PC metadata context in memory, but show placeholder)
+    # For items unique to phone (e.g. edited on phone or removed from PC)
     for p_hash in only_phone_hashes:
-        phone_cards.append({
-            "id": p_hash,
-            "question": "Local card on Phone",
-            "created_at": None,
-            "sync_status": "only_phone"
-        })
+        cached_item = phone_meta.get(p_hash)
+        if cached_item:
+            phone_cards.append({
+                "id": p_hash,
+                "question": cached_item.get("question") or "Local Card on Phone",
+                "created_at": cached_item.get("created_at"),
+                "sync_status": "only_phone",
+                "source_pdf": cached_item.get("source_pdf") or "Mobile Storage",
+                "tags": cached_item.get("tags") or [],
+                "pdf_page": cached_item.get("pdf_page") or 0
+            })
+        else:
+            phone_cards.append({
+                "id": p_hash,
+                "question": "Local card on Phone",
+                "created_at": None,
+                "sync_status": "only_phone"
+            })
         
     return {
         "pc_cards": enriched_pc_cards,
@@ -135,9 +177,10 @@ def queue_cards_for_sync(device_id: str, req: QueueSyncRequest):
 
 @router.get("/device/{device_id}/pending")
 def get_pending_syncs(device_id: str):
-    """The mobile phone polls this (or receives WS trigger) to get its transfer queue."""
+    """The mobile phone polls this to get its transfer queue and prune queue."""
     pending = device_sync_queues.get(device_id, [])
-    return {"pending_hashes": pending}
+    prune = device_sync_prunes.get(device_id, [])
+    return {"pending_hashes": pending, "prune_hashes": prune}
 
 @router.get("/card/{card_hash}/download")
 def download_card_file(card_hash: str):
@@ -160,7 +203,7 @@ from app.routers.pairing import notify_listeners
 def confirm_sync_complete(device_id: str, card_hash: str, checksum: str = None):
     """The mobile phone calls this to notify that it has successfully downloaded and saved the card."""
     # Check file integrity using SHA256 checksum if provided by phone
-    file_path = settings.STORAGE_PATH / f"{card_hash}.flash"
+    file_path = settings.storage_path / f"{card_hash}.flash"
     if file_path.exists() and checksum:
         sha256 = hashlib.sha256()
         try:
@@ -192,3 +235,52 @@ def confirm_sync_complete(device_id: str, card_hash: str, checksum: str = None):
     notify_listeners()
     
     return {"status": "success"}
+
+@router.post("/device/{device_id}/upload_flash")
+async def upload_flash_file(device_id: str, file: UploadFile = File(...)):
+    """Receives a .flash zip file uploaded from mobile phone and stores it on PC."""
+    try:
+        filename = file.filename
+        if filename.endswith(".flash"):
+            card_id = filename[:-6]
+        else:
+            card_id = filename
+            
+        target_path = settings.storage_path / f"{card_id}.flash"
+        
+        with open(target_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        logger.info(f"Uploaded flashcard {card_id}.flash from device {device_id}")
+        
+        if device_id not in device_libraries:
+            device_libraries[device_id] = set()
+        device_libraries[device_id].add(card_id)
+        
+        notify_listeners()
+        return {"status": "success", "card_id": card_id}
+    except Exception as e:
+        logger.error(f"Failed to upload flashcard from phone: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/device/{device_id}/card/{card_id}")
+def delete_device_card(device_id: str, card_id: str):
+    """Queues a card for deletion/pruning on the specified mobile device."""
+    try:
+        if device_id not in device_sync_prunes:
+            device_sync_prunes[device_id] = []
+        if card_id not in device_sync_prunes[device_id]:
+            device_sync_prunes[device_id].append(card_id)
+            
+        if device_id in device_libraries and card_id in device_libraries[device_id]:
+            device_libraries[device_id].remove(card_id)
+        if device_id in device_metadata_cache and card_id in device_metadata_cache[device_id]:
+            del device_metadata_cache[device_id][card_id]
+            
+        from app.routers.pairing import notify_listeners
+        notify_listeners()
+        logger.info(f"Queued card {card_id} for deletion on device {device_id}")
+        return {"status": "success", "deleted_card_id": card_id}
+    except Exception as e:
+        logger.error(f"Failed to delete card from device {device_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

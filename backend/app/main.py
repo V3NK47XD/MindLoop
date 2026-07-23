@@ -1,21 +1,42 @@
 import os
+import sys
 import shutil
 import uuid
 import logging
 import json
 import zipfile
+import webbrowser
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
+
+# Ensure backend and app directories are in sys.path
+backend_dir = Path(__file__).resolve().parent.parent
+app_dir = Path(__file__).resolve().parent
+for d in [str(backend_dir), str(app_dir)]:
+    if d not in sys.path:
+        sys.path.insert(0, d)
+
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
-from app.config import settings
-from app.routers import pairing, sync
-from app.services.pdf_service import extract_pdf_content
-from app.services.generator import generate_flashcards_from_pdf
+try:
+    from app import config
+    from app.config import settings
+    from app.routers import pairing, sync
+    from app.services.pdf_service import extract_pdf_content
+    from app.services.generator import generate_flashcards_from_pdf
+except ModuleNotFoundError:
+    import config
+    from config import settings
+    from routers import pairing, sync
+    from services.pdf_service import extract_pdf_content
+    from services.generator import generate_flashcards_from_pdf
 
 # Setup logging
 logging.basicConfig(
@@ -24,11 +45,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def open_browser_delayed():
+    time.sleep(1.5)
+    try:
+        webbrowser.open(f"http://localhost:{settings.PORT}")
+        logger.info(f"Automatically opened Web UI in browser at http://localhost:{settings.PORT}")
+    except Exception as e:
+        logger.warning(f"Could not auto-open browser: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Initialize UDP broadcast discovery listener
     logger.info("Starting UDP Broadcast Discovery Listener...")
     pairing.start_udp_broadcast_listener()
+    
+    # Auto-open web browser
+    threading.Thread(target=open_browser_delayed, daemon=True).start()
+    
     yield
     # Shutdown: Clean up UDP listener
     logger.info("Stopping UDP Broadcast Discovery Listener...")
@@ -146,7 +179,7 @@ class CardUpdate(BaseModel):
     pdf_ref_line: int
     attachments: list[str] = []
 
-from app.services.generator import compute_card_hash
+from app.services.generator import generate_card_id
 
 @app.post("/api/cards")
 def create_card_manually(
@@ -154,7 +187,7 @@ def create_card_manually(
     images: list[UploadFile] = File([])
 ):
     """
-    Creates a new flashcard manually and packages it into <card_hash>.flash.
+    Creates a new flashcard manually and packages it into <card_id>.flash using a 128-char random ID.
     """
     try:
         data_dict = json.loads(card_data)
@@ -162,33 +195,32 @@ def create_card_manually(
     except Exception as parse_err:
         raise HTTPException(status_code=400, detail=f"Invalid card data: {parse_err}")
 
+    if not card_data_parsed.tags or len(card_data_parsed.tags) == 0 or not card_data_parsed.tags[0].strip():
+        raise HTTPException(
+            status_code=400,
+            detail="A tag is required for every flashcard."
+        )
+        
     if len(card_data_parsed.tags) > 1:
         raise HTTPException(
             status_code=400,
             detail="A card can have at most exactly 1 tag."
         )
         
-    # Calculate hash
-    card_hash = compute_card_hash(card_data_parsed.question, card_data_parsed.answer, card_data_parsed.tags)
+    # Generate 128-character unique random ID
+    card_id = generate_card_id()
     created_at = datetime.utcnow().isoformat() + "Z"
     
     # Save target path
-    flash_filename = f"{card_hash}.flash"
+    flash_filename = f"{card_id}.flash"
     flash_path = settings.storage_path / flash_filename
     
-    # Check if already exists
-    if flash_path.exists():
-        raise HTTPException(
-            status_code=400,
-            detail="A flashcard with identical content already exists."
-        )
-        
     # Standardize attachments paths
     attachments = []
     
     # Build metadata.json
     metadata = {
-        "id": card_hash,
+        "id": card_id,
         "question": card_data_parsed.question,
         "created_at": created_at,
         "tags": card_data_parsed.tags,
@@ -201,7 +233,7 @@ def create_card_manually(
         os.makedirs(settings.storage_path, exist_ok=True)
         
         # Save uploaded images to a temp folder first to write to zip
-        temp_dir = settings.temp_path / f"new_{card_hash}"
+        temp_dir = settings.temp_path / f"new_{card_id}"
         temp_dir.mkdir(parents=True, exist_ok=True)
         
         for img in images:
@@ -223,12 +255,12 @@ def create_card_manually(
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
             
-        logger.info(f"Manually created and packaged flashcard {card_hash}")
-        return {"status": "success", "card_hash": card_hash}
+        logger.info(f"Manually created and packaged flashcard {card_id}")
+        return {"status": "success", "card_hash": card_id}
     except Exception as e:
         logger.error(f"Failed to save manual flashcard: {e}")
         try:
-            temp_dir = settings.temp_path / f"new_{card_hash}"
+            temp_dir = settings.temp_path / f"new_{card_id}"
             if temp_dir.exists():
                 shutil.rmtree(temp_dir)
         except:
@@ -242,7 +274,8 @@ def update_card(
     images: list[UploadFile] = File([])
 ):
     """
-    Edits an existing flashcard. If content changes, deletes old file and packages into new hash.
+    Edits an existing flashcard in-place preserving its permanent 128-character ID.
+    Rewrites content.md, metadata.json, and assets inside {card_id}.flash.
     """
     try:
         data_dict = json.loads(card_data)
@@ -256,67 +289,65 @@ def update_card(
             detail="A card can have at most exactly 1 tag."
         )
         
-    old_flash_path = settings.storage_path / f"{card_hash}.flash"
-    if not old_flash_path.exists():
-        raise HTTPException(status_code=404, detail="Flashcard not found")
-        
-    # Calculate new hash
-    new_card_hash = compute_card_hash(card_data_parsed.question, card_data_parsed.answer, card_data_parsed.tags)
+    flash_path = settings.storage_path / f"{card_hash}.flash"
     
-    # Read existing metadata to preserve fields like created_at, attachments, etc.
+    existing_created_at = datetime.utcnow().isoformat() + "Z"
+    existing_source_pdf = card_data_parsed.source_pdf
+    temp_dir = settings.temp_path / f"edit_{card_hash}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Read existing zip assets and metadata if available
+    if flash_path.exists():
+        try:
+            with zipfile.ZipFile(flash_path, "r") as old_zip:
+                metadata_str = old_zip.read("metadata.json").decode("utf-8")
+                old_metadata = json.loads(metadata_str)
+                existing_created_at = old_metadata.get("created_at", existing_created_at)
+                existing_source_pdf = old_metadata.get("source_pdf", existing_source_pdf)
+                
+                # Extract any assets
+                for name in old_zip.namelist():
+                    if name.startswith("assets/"):
+                        old_zip.extract(name, temp_dir)
+        except Exception as zip_err:
+            logger.warning(f"Error reading existing card zip: {zip_err}")
+                
+    extracted_assets_dir = temp_dir / "assets"
+    active_attachments = []
+    if extracted_assets_dir.exists():
+        for asset_file in list(extracted_assets_dir.glob("*")):
+            rel_name = f"assets/{asset_file.name}"
+            if rel_name in card_data_parsed.attachments:
+                active_attachments.append(rel_name)
+            else:
+                os.remove(asset_file)
+                
+    # Save newly uploaded images
+    for img in images:
+        if img.filename:
+            extracted_assets_dir.mkdir(parents=True, exist_ok=True)
+            target_img_path = extracted_assets_dir / img.filename
+            with open(target_img_path, "wb") as buffer:
+                shutil.copyfileobj(img.file, buffer)
+            rel_name = f"assets/{img.filename}"
+            if rel_name not in active_attachments:
+                active_attachments.append(rel_name)
+                
+    # Build metadata.json using fixed card_hash ID
+    metadata = {
+        "id": card_hash,
+        "question": card_data_parsed.question,
+        "created_at": existing_created_at,
+        "tags": card_data_parsed.tags,
+        "source_pdf": existing_source_pdf,
+        "pdf_ref_line": card_data_parsed.pdf_ref_line,
+        "attachments": active_attachments
+    }
+    
     try:
-        existing_created_at = datetime.utcnow().isoformat() + "Z"
-        temp_dir = settings.temp_path / f"edit_{card_hash}"
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        
-        with zipfile.ZipFile(old_flash_path, "r") as old_zip:
-            metadata_str = old_zip.read("metadata.json").decode("utf-8")
-            old_metadata = json.loads(metadata_str)
-            existing_created_at = old_metadata.get("created_at", existing_created_at)
-            
-            # Extract any assets
-            for name in old_zip.namelist():
-                if name.startswith("assets/"):
-                    old_zip.extract(name, temp_dir)
-                    
-        # Filter temp assets: only keep the ones that are in card_data_parsed.attachments
-        extracted_assets_dir = temp_dir / "assets"
-        active_attachments = []
-        if extracted_assets_dir.exists():
-            for asset_file in list(extracted_assets_dir.glob("*")):
-                rel_name = f"assets/{asset_file.name}"
-                if rel_name in card_data_parsed.attachments:
-                    active_attachments.append(rel_name)
-                else:
-                    # User deleted this attachment
-                    os.remove(asset_file)
-                    
-        # Save newly uploaded images
-        for img in images:
-            if img.filename:
-                extracted_assets_dir.mkdir(parents=True, exist_ok=True)
-                target_img_path = extracted_assets_dir / img.filename
-                with open(target_img_path, "wb") as buffer:
-                    shutil.copyfileobj(img.file, buffer)
-                rel_name = f"assets/{img.filename}"
-                if rel_name not in active_attachments:
-                    active_attachments.append(rel_name)
-                    
-        # Build metadata.json
-        metadata = {
-            "id": new_card_hash,
-            "question": card_data_parsed.question,
-            "created_at": existing_created_at,
-            "tags": card_data_parsed.tags,
-            "source_pdf": card_data_parsed.source_pdf,
-            "pdf_ref_line": card_data_parsed.pdf_ref_line,
-            "attachments": active_attachments
-        }
-        
-        new_flash_path = settings.storage_path / f"{new_card_hash}.flash"
-        
-        # Package into new ZIP (or overwrite if same hash)
-        with zipfile.ZipFile(new_flash_path, "w", zipfile.ZIP_DEFLATED) as new_zip:
+        os.makedirs(settings.storage_path, exist_ok=True)
+        # Package into ZIP overwriting in-place
+        with zipfile.ZipFile(flash_path, "w", zipfile.ZIP_DEFLATED) as new_zip:
             new_zip.writestr("metadata.json", json.dumps(metadata, indent=2))
             new_zip.writestr("content.md", card_data_parsed.answer)
             
@@ -325,21 +356,26 @@ def update_card(
                 for asset_file in extracted_assets_dir.glob("*"):
                     new_zip.write(asset_file, arcname=f"assets/{asset_file.name}")
                     
-        # If hash changed, delete the old file
-        if new_card_hash != card_hash:
-            os.remove(old_flash_path)
-            logger.info(f"Content changed. Deleted old card {card_hash} and created new card {new_card_hash}")
-        else:
-            logger.info(f"Overwrote card {card_hash}")
-            
+        logger.info(f"Overwrote flashcard {card_hash} in-place.")
+        
         # Clean up temp edit directory
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
+
+        # If card is present in a connected phone library, queue the edit so phone receives update
+        from app.routers.pairing import notify_listeners
+        for dev_id, phone_set in sync.device_libraries.items():
+            if card_hash in phone_set:
+                if dev_id not in sync.device_sync_queues:
+                    sync.device_sync_queues[dev_id] = []
+                if card_hash not in sync.device_sync_queues[dev_id]:
+                    sync.device_sync_queues[dev_id].append(card_hash)
+
+        notify_listeners()
             
-        return {"status": "success", "card_hash": new_card_hash}
+        return {"status": "success", "card_hash": card_hash}
     except Exception as e:
         logger.error(f"Failed to edit flashcard: {e}")
-        # Clean up temp edit directory
         try:
             temp_dir = settings.temp_path / f"edit_{card_hash}"
             if temp_dir.exists():
@@ -374,24 +410,39 @@ def delete_card(card_hash: str):
 
 @app.get("/api/cards/{card_hash}/content")
 def get_card_content(card_hash: str):
-    """Retrieves the full card details including the answer body from content.md."""
+    """Retrieves the full card details including the answer body from content.md or device metadata cache."""
     import zipfile
     import json
     file_path = settings.storage_path / f"{card_hash}.flash"
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Flashcard not found")
-        
-    try:
-        with zipfile.ZipFile(file_path, "r") as zip_file:
-            metadata_str = zip_file.read("metadata.json").decode("utf-8")
-            metadata = json.loads(metadata_str)
-            answer_str = zip_file.read("content.md").decode("utf-8")
-            metadata["id"] = card_hash
-            metadata["answer"] = answer_str
-            return metadata
-    except Exception as e:
-        logger.error(f"Failed to read card content for {card_hash}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    if file_path.exists():
+        try:
+            with zipfile.ZipFile(file_path, "r") as zip_file:
+                metadata_str = zip_file.read("metadata.json").decode("utf-8")
+                metadata = json.loads(metadata_str)
+                answer_str = zip_file.read("content.md").decode("utf-8")
+                metadata["id"] = card_hash
+                metadata["answer"] = answer_str
+                return metadata
+        except Exception as e:
+            logger.error(f"Failed to read card content for {card_hash}: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # Dynamic Fallback: Check if card content exists in mobile device metadata cache
+    for dev_id, meta_map in sync.device_metadata_cache.items():
+        if card_hash in meta_map:
+            cached_item = meta_map[card_hash]
+            return {
+                "id": card_hash,
+                "question": cached_item.get("question") or "Untitled Flashcard",
+                "answer": cached_item.get("answer") or "*Card stored on Mobile Device*",
+                "created_at": cached_item.get("created_at"),
+                "tags": cached_item.get("tags") or [],
+                "source_pdf": cached_item.get("source_pdf") or "Mobile Storage",
+                "pdf_page": cached_item.get("pdf_page") or 0,
+                "attachments": cached_item.get("attachments") or []
+            }
+
+    raise HTTPException(status_code=404, detail="Flashcard not found")
 
 @app.get("/api/cards/{card_hash}/metadata")
 def get_card_metadata(card_hash: str):
@@ -442,6 +493,87 @@ def get_card_asset(card_hash: str, filename: str):
         logger.error(f"Failed to extract asset {filename} from {card_hash}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+class EnvUpdateRequest(BaseModel):
+    raw_env: str
+
+@app.get("/api/env")
+def get_env_configuration():
+    """Reads the .env configuration file (creating it with default settings if missing)."""
+    env_path = config.ensure_env_file_exists()
+    raw_content = env_path.read_text(encoding="utf-8")
+    
+    env_vars = {}
+    for line in raw_content.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            env_vars[k.strip()] = v.strip()
+            
+    return {
+        "raw_env": raw_content,
+        "env_vars": env_vars,
+        "env_file_path": str(env_path)
+    }
+
+@app.post("/api/env")
+def update_env_configuration(req: EnvUpdateRequest):
+    """Overwrites the .env configuration file and updates runtime environment variables."""
+    env_path = config.ensure_env_file_exists()
+    try:
+        env_path.write_text(req.raw_env, encoding="utf-8")
+        
+        # Update runtime os.environ and settings
+        for line in req.raw_env.splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                k_str = k.strip()
+                v_str = v.strip()
+                os.environ[k_str] = v_str
+                if hasattr(config.settings, k_str):
+                    setattr(config.settings, k_str, v_str)
+                    
+        logger.info(".env file updated via Web UI.")
+        return {"status": "success", "message": ".env file updated successfully."}
+    except Exception as e:
+        logger.error(f"Failed to update .env file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Mount Vite SPA Frontend Build on home route
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    frontend_dist = Path(sys._MEIPASS) / "frontend" / "dist"
+else:
+    frontend_dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+    if not frontend_dist.exists():
+        frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+if frontend_dist.exists():
+    assets_dir = frontend_dist / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="static_assets")
+        
+    @app.get("/{full_path:path}")
+    async def serve_spa_frontend(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API route not found")
+        target_file = frontend_dist / full_path
+        if target_file.exists() and target_file.is_file():
+            return FileResponse(str(target_file))
+        index_file = frontend_dist / "index.html"
+        if index_file.exists():
+            return FileResponse(str(index_file))
+        raise HTTPException(status_code=404, detail="Frontend index.html not found")
+
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
     import uvicorn
-    uvicorn.run("app.main:app", host=settings.HOST, port=settings.PORT, reload=True)
+    
+    is_frozen = getattr(sys, 'frozen', False)
+    if is_frozen:
+        uvicorn.run(app, host="0.0.0.0", port=6769)
+    else:
+        try:
+            uvicorn.run("app.main:app", host="0.0.0.0", port=6769, reload=False)
+        except Exception:
+            uvicorn.run(app, host="0.0.0.0", port=6769)
