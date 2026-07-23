@@ -12,12 +12,19 @@ class MainNavigationView extends StatefulWidget {
 
 class _MainNavigationViewState extends State<MainNavigationView> {
   int _currentIndex = 0;
+  final GlobalKey<NotificationsHistoryViewState> _historyKey = GlobalKey<NotificationsHistoryViewState>();
 
-  final List<Widget> _pages = const [
-    NotificationsHistoryView(),
-    HomeView(),
-    NotificationsView(),
-  ];
+  late final List<Widget> _pages;
+
+  @override
+  void initState() {
+    super.initState();
+    _pages = [
+      NotificationsHistoryView(key: _historyKey),
+      const HomeView(),
+      const NotificationsView(),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -53,6 +60,9 @@ class _MainNavigationViewState extends State<MainNavigationView> {
               child: BottomNavigationBar(
                 currentIndex: _currentIndex,
                 onTap: (index) {
+                  if (index == 0) {
+                    _historyKey.currentState?.refreshHistory();
+                  }
                   setState(() {
                     _currentIndex = index;
                   });
