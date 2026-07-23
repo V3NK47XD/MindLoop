@@ -26,7 +26,7 @@ class StorageService {
 
     return await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE cards (
@@ -49,6 +49,19 @@ class StorageService {
             scheduled_time TEXT
           )
         ''');
+        await db.execute('''
+          CREATE TABLE scheduled_notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            notification_id INTEGER,
+            card_id TEXT,
+            tag TEXT,
+            title TEXT,
+            body TEXT,
+            scheduled_time TEXT,
+            slot_order INTEGER,
+            status TEXT
+          )
+        ''');
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -59,6 +72,21 @@ class StorageService {
               title TEXT,
               body TEXT,
               scheduled_time TEXT
+            )
+          ''');
+        }
+        if (oldVersion < 3) {
+          await db.execute('''
+            CREATE TABLE scheduled_notifications (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              notification_id INTEGER,
+              card_id TEXT,
+              tag TEXT,
+              title TEXT,
+              body TEXT,
+              scheduled_time TEXT,
+              slot_order INTEGER,
+              status TEXT
             )
           ''');
         }
@@ -222,6 +250,13 @@ class StorageService {
       whereArgs: [id],
     );
 
+    // Remove pending scheduled notifications for deleted card
+    await db.delete(
+      'scheduled_notifications',
+      where: 'card_id = ? AND status = ?',
+      whereArgs: [id, 'pending'],
+    );
+
     // Remove view count record if exists
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -329,5 +364,74 @@ class StorageService {
       where: 'scheduled_time > ?',
       whereArgs: [nowStr],
     );
+  }
+
+  // --- SCHEDULED NOTIFICATIONS TABLE METHODS ---
+
+  // Insert a new batch of scheduled notifications
+  Future<void> saveScheduledNotificationsBatch(List<Map<String, dynamic>> slots) async {
+    final db = await database;
+    final batch = db.batch();
+    for (final slot in slots) {
+      batch.insert('scheduled_notifications', slot);
+    }
+    await batch.commit(noResult: true);
+  }
+
+  // Clear all scheduled notifications (e.g., on cycle reset or reschedule)
+  Future<void> clearScheduledNotifications() async {
+    final db = await database;
+    await db.delete('scheduled_notifications');
+  }
+
+  // Get all scheduled notifications (optionally filter pending only)
+  Future<List<Map<String, dynamic>>> getScheduledNotifications({bool pendingOnly = false}) async {
+    final db = await database;
+    if (pendingOnly) {
+      return await db.query(
+        'scheduled_notifications',
+        where: 'status = ?',
+        whereArgs: ['pending'],
+        orderBy: 'slot_order ASC',
+      );
+    }
+    return await db.query(
+      'scheduled_notifications',
+      orderBy: 'slot_order ASC',
+    );
+  }
+
+  // Get the single next pending scheduled notification (pointer item)
+  Future<Map<String, dynamic>?> getNextPendingScheduledNotification() async {
+    final db = await database;
+    final results = await db.query(
+      'scheduled_notifications',
+      where: 'status = ?',
+      whereArgs: ['pending'],
+      orderBy: 'slot_order ASC',
+      limit: 1,
+    );
+    if (results.isEmpty) return null;
+    return results.first;
+  }
+
+  // Mark a specific scheduled notification as 'sent'
+  Future<void> markScheduledNotificationSent(int id) async {
+    final db = await database;
+    await db.update(
+      'scheduled_notifications',
+      {'status': 'sent'},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  // Count remaining pending scheduled notifications
+  Future<int> getPendingScheduledNotificationsCount() async {
+    final db = await database;
+    final result = await db.rawQuery(
+      "SELECT COUNT(*) as count FROM scheduled_notifications WHERE status = 'pending'"
+    );
+    return Sqflite.firstIntValue(result) ?? 0;
   }
 }

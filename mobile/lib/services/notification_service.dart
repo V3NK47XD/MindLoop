@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest_all.dart' as tz;
@@ -77,26 +76,7 @@ class NotificationService {
     return cards.where((c) => c.tags.any((t) => _normalizeTag(t) == normalizedTag)).toList();
   }
 
-  // Read per-tag card pointer map from SharedPreferences
-  // Key: 'tag_card_pointers' → JSON map of { "tagName": cardIndex }
-  Future<Map<String, int>> _loadTagCardPointers() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString('tag_card_pointers');
-    if (raw == null) return {};
-    try {
-      final Map<String, dynamic> decoded = jsonDecode(raw);
-      return decoded.map((k, v) => MapEntry(k, v as int));
-    } catch (_) {
-      return {};
-    }
-  }
-
-  Future<void> _saveTagCardPointers(Map<String, int> pointers) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('tag_card_pointers', jsonEncode(pointers));
-  }
-
-  // Read background alert schedule history and synchronize the checklist progression
+  // Process scheduled notifications in SQLite whose scheduled_time has elapsed
   Future<void> updateNotificationProgress() async {
     final prefs = await SharedPreferences.getInstance();
     final cards = await StorageService().getAllCards();
@@ -124,14 +104,12 @@ class NotificationService {
     List<String> shuffledTags = prefs.getStringList('shuffled_hashtags') ?? [];
     List<String> completedTags = prefs.getStringList('completed_hashtags') ?? [];
 
-    // Reconcile tag set — normalize both sets for comparison
+    // Reconcile tag set
     final setA = allHashtags.map(_normalizeTag).toSet();
     final setB = shuffledTags.map(_normalizeTag).toSet();
     if (setA.length != setB.length || !setA.containsAll(setB)) {
       shuffledTags = List<String>.from(allHashtags)..shuffle();
       completedTags = [];
-      // Reset all card pointers when tag set changes
-      await _saveTagCardPointers({});
       await prefs.setInt('global_rotation_step_pointer', 0);
     }
 
@@ -149,52 +127,57 @@ class NotificationService {
     if (completedTags.length >= shuffledTags.length && shuffledTags.isNotEmpty) {
       completedTags = [];
       shuffledTags.shuffle();
-      await _saveTagCardPointers({});
       await prefs.setInt('global_rotation_step_pointer', 0);
     }
 
     await prefs.setStringList('shuffled_hashtags', shuffledTags);
     await prefs.setStringList('completed_hashtags', completedTags);
 
-    final slotsRaw = prefs.getString('scheduled_slots');
-    if (slotsRaw != null) {
-      try {
-        final List<dynamic> oldSlots = jsonDecode(slotsRaw);
-        final now = DateTime.now();
-        List<dynamic> remainingSlots = [];
+    // Process pending scheduled notifications in SQLite
+    final pendingList = await StorageService().getScheduledNotifications(pendingOnly: true);
+    final now = DateTime.now();
 
-        for (final slot in oldSlots) {
-          final timeStr = slot['time'] as String;
-          final time = DateTime.parse(timeStr);
-          if (!time.isBefore(now)) {
-            remainingSlots.add(slot);
-          }
-        }
+    for (final item in pendingList) {
+      final timeStr = item['scheduled_time'] as String;
+      final scheduledTime = DateTime.parse(timeStr);
+      if (scheduledTime.isBefore(now)) {
+        final id = item['id'] as int;
+        final cardId = item['card_id'] as String;
+        final title = item['title'] as String;
+        final body = item['body'] as String;
 
-        if (remainingSlots.length != oldSlots.length) {
-          await prefs.setString('scheduled_slots', jsonEncode(remainingSlots));
-        }
-      } catch (e) {
-        print("Error updating notification progress: $e");
+        // Mark as sent in SQLite
+        await StorageService().markScheduledNotificationSent(id);
+
+        // Log into notifications_history
+        await StorageService().logNotification(cardId, title, body, scheduledTime);
+      }
+    }
+
+    // Check if entire cycle is complete (0 pending remaining) -> Auto renew schedule!
+    final remainingCount = await StorageService().getPendingScheduledNotificationsCount();
+    if (remainingCount == 0 && cards.isNotEmpty) {
+      final frequencyHours = prefs.getInt('notification_frequency') ?? 3;
+      if (frequencyHours > 0) {
+        print("Scheduled notifications queue exhausted. Auto-renewing cycle schedule...");
+        await rescheduleReminders(frequencyHours);
       }
     }
   }
 
-  // Schedule rotational hashtag reminders covering the next 7 days (capped at 48 safety limit)
+  // Schedule rotational hashtag reminders into SQLite scheduled_notifications table & Flutter Local Notifications plugin
   Future<void> rescheduleReminders(int frequencyHours) async {
-    // 1. Process past alerts to synchronize checklist state
-    await updateNotificationProgress();
-
-    // 2. Cancel all scheduled alerts
+    // 1. Clear existing schedule queue in SQLite and Plugin
+    await StorageService().clearScheduledNotifications();
     await _notificationsPlugin.cancelAll();
     await StorageService().clearFutureNotifications();
-    
+
     if (frequencyHours <= 0) {
       print("Reminders disabled (frequency set to 0).");
       return;
     }
 
-    // 3. Get all cards
+    // 2. Load cards
     final cards = await StorageService().getAllCards();
     if (cards.isEmpty) {
       print("No cards available to schedule reminders.");
@@ -217,9 +200,9 @@ class NotificationService {
       return;
     }
 
-    // 4. Calculate total slots for 7 days
+    // 3. Calculate total slots for 7 days (max 48 safety limit)
     int slotsCount = (7 * 24 / frequencyHours).floor();
-    if (slotsCount > 48) slotsCount = 48; // Android safety cap
+    if (slotsCount > 48) slotsCount = 48;
 
     const androidDetails = AndroidNotificationDetails(
       'mindloop_reminders',
@@ -237,31 +220,25 @@ class NotificationService {
     );
     const notificationDetails = NotificationDetails(android: androidDetails, iOS: iosDetails);
 
-    // Load view counts for prioritizing unviewed cards
     final countsRaw = prefs.getString('card_view_counts');
     Map<String, int> counts = {};
     if (countsRaw != null) {
       try {
         final Map<String, dynamic> decoded = jsonDecode(countsRaw);
         decoded.forEach((key, val) {
-          if (val is int) {
-            counts[key] = val;
-          }
+          if (val is int) counts[key] = val;
         });
       } catch (_) {}
     }
 
-    print("Scheduling next $slotsCount reminders, every $frequencyHours hours... (Active Tags: $activeTags)");
+    print("Building $slotsCount scheduled notifications in SQLite table scheduled_notifications every $frequencyHours hours...");
 
-    List<Map<String, dynamic>> scheduledSlotsData = [];
-    // Per-tag sequential card pointers (independent of view counts)
+    List<Map<String, dynamic>> sqliteSlots = [];
     Map<String, int> tagPointers = {};
 
     for (int slotIndex = 1; slotIndex <= slotsCount; slotIndex++) {
-      // Pick active tag in rotation
       final tag = activeTags[(slotIndex - 1) % activeTags.length];
 
-      // Get cards for tag, sorted: unviewed first, then by ID
       final tagCards = _cardsForTag(cards, tag);
       tagCards.sort((a, b) {
         final viewA = counts[a.id] ?? 0;
@@ -272,99 +249,76 @@ class NotificationService {
 
       if (tagCards.isEmpty) continue;
 
-      // Advance per-tag pointer sequentially
       final ptr = tagPointers[tag] ?? 0;
       final card = tagCards[ptr % tagCards.length];
       tagPointers[tag] = ptr + 1;
 
       final scheduledTime = tz.TZDateTime.now(tz.local).add(Duration(hours: frequencyHours * slotIndex));
+      final title = 'MindLoop Review - #$tag';
+      final body = card.question;
 
-      // Schedule local notification
+      // Local plugin schedule
       await _notificationsPlugin.zonedSchedule(
         id: slotIndex,
-        title: 'MindLoop Review - #$tag',
-        body: card.question,
+        title: title,
+        body: body,
         scheduledDate: scheduledTime,
         notificationDetails: notificationDetails,
         androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
         payload: card.id,
       );
 
-      // Log notification history
-      await StorageService().logNotification(
-        card.id,
-        'MindLoop Review - #$tag',
-        card.question,
-        scheduledTime,
-      );
-
-      scheduledSlotsData.add({
-        'time': scheduledTime.toIso8601String(),
+      // Data for SQLite scheduled_notifications table
+      sqliteSlots.add({
+        'notification_id': slotIndex,
+        'card_id': card.id,
         'tag': tag,
+        'title': title,
+        'body': body,
+        'scheduled_time': scheduledTime.toIso8601String(),
+        'slot_order': slotIndex,
+        'status': 'pending',
       });
-
-      print("Scheduled reminder #$slotIndex at $scheduledTime (Tag: $tag | Card: ${card.id})");
     }
 
-    // Save scheduled slots
-    await prefs.setString('scheduled_slots', jsonEncode(scheduledSlotsData));
+    // Save batch to SQLite scheduled_notifications table
+    await StorageService().saveScheduledNotificationsBatch(sqliteSlots);
+    print("Saved ${sqliteSlots.length} items to scheduled_notifications table in SQLite.");
   }
 
-  // Helper to schedule the next notification in rotation after a 5-second delay.
-  // Uses global_rotation_step_pointer to rotate through tags, and
-  // tag_card_pointers to advance through cards within each tag independently.
+  // "Send Next Notification" logic:
+  // Reads the next pending notification pointer from scheduled_notifications table in SQLite.
+  // Cancels its plugin background timer, fires it in 5s, updates status to 'sent', and advances pointer.
   Future<Flashcard?> scheduleNextNotificationAfter5Seconds() async {
     await updateNotificationProgress();
 
-    final cards = await StorageService().getAllCards();
-    if (cards.isEmpty) return null;
-
     final prefs = await SharedPreferences.getInstance();
-    List<String> shuffledTags = prefs.getStringList('shuffled_hashtags') ?? [];
-    List<String> completedTags = prefs.getStringList('completed_hashtags') ?? [];
+    final frequencyHours = prefs.getInt('notification_frequency') ?? 3;
 
-    List<String> activeTags = shuffledTags.where((t) => !completedTags.contains(t)).toList();
-    if (activeTags.isEmpty && shuffledTags.isNotEmpty) {
-      completedTags = [];
-      activeTags = List<String>.from(shuffledTags);
-      await prefs.setStringList('completed_hashtags', completedTags);
-      // Reset card pointers when cycling back
-      await _saveTagCardPointers({});
-      await prefs.setInt('global_rotation_step_pointer', 0);
-    }
-    if (activeTags.isEmpty) return null;
+    // Fetch the single next pending notification from SQLite table pointer
+    Map<String, dynamic>? nextItem = await StorageService().getNextPendingScheduledNotification();
 
-    // Read the global tag rotation pointer
-    int stepPointer = prefs.getInt('global_rotation_step_pointer') ?? 0;
-
-    // Pick current tag from activeTags in rotation
-    final tag = activeTags[stepPointer % activeTags.length];
-
-    // Get all cards for this tag, sorted by ID (stable, deterministic order)
-    // We do NOT sort by view count here — this button always cycles through all cards sequentially
-    final tagCards = _cardsForTag(cards, tag);
-    tagCards.sort((a, b) => a.id.compareTo(b.id));
-
-    if (tagCards.isEmpty) {
-      // Skip this tag and advance pointer
-      await prefs.setInt('global_rotation_step_pointer', stepPointer + 1);
-      return null;
+    // If queue is empty, auto-renew cycle and fetch again
+    if (nextItem == null) {
+      print("No pending scheduled notifications in SQLite. Generating new cycle...");
+      await rescheduleReminders(frequencyHours > 0 ? frequencyHours : 3);
+      nextItem = await StorageService().getNextPendingScheduledNotification();
     }
 
-    // Read per-tag card pointer — this independently tracks which card to send next per tag
-    final tagPointers = await _loadTagCardPointers();
-    final cardPtr = tagPointers[tag] ?? 0;
-    final card = tagCards[cardPtr % tagCards.length];
+    if (nextItem == null) return null;
 
-    // Advance the per-tag card pointer for next time this tag is hit
-    tagPointers[tag] = cardPtr + 1;
-    await _saveTagCardPointers(tagPointers);
+    final int rowId = nextItem['id'] as int;
+    final int notificationId = nextItem['notification_id'] as int;
+    final String cardId = nextItem['card_id'] as String;
+    final String tag = nextItem['tag'] as String;
+    final String title = nextItem['title'] as String;
+    final String body = nextItem['body'] as String;
 
-    // Advance global tag rotation pointer for next button press
-    await prefs.setInt('global_rotation_step_pointer', stepPointer + 1);
+    // 1. Remove background alert from plugin queue
+    await _notificationsPlugin.cancel(id: notificationId);
 
-    final title = 'MindLoop Review - #$tag';
-    const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+    // 2. Schedule test alert to fire in 5 seconds
+    const androidDetails = AndroidNotificationDetails(
       'mindloop_reminders',
       'MindLoop Reminders',
       channelDescription: 'Rotational hashtag flashcard alerts',
@@ -373,33 +327,43 @@ class NotificationService {
       playSound: true,
       largeIcon: DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
     );
-    const DarwinNotificationDetails iosDetails = DarwinNotificationDetails(
+    const iosDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentBadge: true,
       presentSound: true,
     );
-    const NotificationDetails details = NotificationDetails(android: androidDetails, iOS: iosDetails);
+    const notificationDetails = NotificationDetails(android: androidDetails, iOS: iosDetails);
 
     final scheduledTime = tz.TZDateTime.now(tz.local).add(const Duration(seconds: 5));
+    final testAlertId = DateTime.now().millisecondsSinceEpoch % 100000;
 
     await _notificationsPlugin.zonedSchedule(
-      id: DateTime.now().millisecondsSinceEpoch % 100000,
+      id: testAlertId,
       title: title,
-      body: card.question,
+      body: body,
       scheduledDate: scheduledTime,
-      notificationDetails: details,
+      notificationDetails: notificationDetails,
       androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-      payload: card.id,
+      payload: cardId,
     );
 
-    // Log notification in history
-    await StorageService().logNotification(
-      card.id,
-      title,
-      card.question,
-      scheduledTime,
-    );
-    print("Scheduled next notification (#$tag card[$cardPtr] - ${card.question}) to fire in 5 seconds at: $scheduledTime");
-    return card;
+    // 3. Mark row as 'sent' in SQLite scheduled_notifications table (advances the pointer)
+    await StorageService().markScheduledNotificationSent(rowId);
+
+    // 4. Log to notifications_history table
+    await StorageService().logNotification(cardId, title, body, scheduledTime);
+
+    // 5. Update global rotation step pointer for UI NEXT tag sync
+    int stepPointer = prefs.getInt('global_rotation_step_pointer') ?? 0;
+    await prefs.setInt('global_rotation_step_pointer', stepPointer + 1);
+
+    // 6. If queue is now empty, renew schedule for next cycle
+    final remainingCount = await StorageService().getPendingScheduledNotificationsCount();
+    if (remainingCount == 0 && frequencyHours > 0) {
+      await rescheduleReminders(frequencyHours);
+    }
+
+    print("Next notification sent from SQLite queue (Row #$rowId | Tag #$tag | Card: $cardId). Firing in 5s!");
+    return await StorageService().getCardById(cardId);
   }
 }

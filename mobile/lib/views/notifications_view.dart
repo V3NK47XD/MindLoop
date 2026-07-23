@@ -5,6 +5,7 @@ import 'package:mobile/models/flashcard.dart';
 import 'package:mobile/services/notification_service.dart';
 import 'package:mobile/services/storage_service.dart';
 import 'package:mobile/widgets/paper_background.dart';
+import 'package:mobile/views/scheduled_notifications_view.dart';
 import 'package:mobile/main.dart'; // To access themeNotifier
 
 class NotificationsView extends StatefulWidget {
@@ -508,6 +509,31 @@ class _NotificationsViewState extends State<NotificationsView> {
                                       ),
                                     );
                                   }
+                                },
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            SizedBox(
+                              width: double.infinity,
+                              height: 46,
+                              child: OutlinedButton.icon(
+                                icon: const Icon(Icons.calendar_month_rounded, color: Colors.cyan),
+                                label: Text(
+                                  'SHOW SCHEDULED NOTIFICATIONS',
+                                  style: TextStyle(color: textColor, fontWeight: FontWeight.w900, fontSize: 13),
+                                ),
+                                style: OutlinedButton.styleFrom(
+                                  backgroundColor: panelBg,
+                                  side: BorderSide(color: isDark ? Colors.cyan : const Color(0xFF06B6D4), width: 2.0),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                ),
+                                onPressed: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => const ScheduledNotificationsView(),
+                                    ),
+                                  ).then((_) => _loadSettingsAndChecklist());
                                 },
                               ),
                             ),
