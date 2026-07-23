@@ -23,12 +23,12 @@ class NotificationService {
     // 1. Initialize Timezones
     tz.initializeTimeZones();
     try {
-      final timeZoneInfo = await FlutterTimezone.getLocalTimezone();
-      final String timeZoneName = timeZoneInfo.identifier;
+      final dynamic tzRes = await FlutterTimezone.getLocalTimezone();
+      final String timeZoneName = tzRes is String ? tzRes : tzRes.toString();
       tz.setLocalLocation(tz.getLocation(timeZoneName));
       print("Local timezone initialized: $timeZoneName");
     } catch (e) {
-      print("Could not initialize local timezone, defaulting to UTC: $e");
+      print("Could not initialize local timezone: $e");
     }
 
     // 2. Android Initialization
@@ -369,15 +369,34 @@ class NotificationService {
     final scheduledTime = tz.TZDateTime.now(tz.local).add(const Duration(seconds: 5));
     final testAlertId = DateTime.now().millisecondsSinceEpoch % 100000;
 
-    await _notificationsPlugin.zonedSchedule(
-      id: testAlertId,
-      title: title,
-      body: body,
-      scheduledDate: scheduledTime,
-      notificationDetails: notificationDetails,
-      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-      payload: cardId,
-    );
+    try {
+      await _notificationsPlugin.zonedSchedule(
+        id: testAlertId,
+        title: title,
+        body: body,
+        scheduledDate: scheduledTime,
+        notificationDetails: notificationDetails,
+        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+        payload: cardId,
+      );
+    } catch (e) {
+      print("zonedSchedule failed: $e. Falling back to Timer + show()...");
+    }
+
+    // Fallback Timer to guarantee delivery after 5 seconds even if zonedSchedule is restricted by OS
+    Timer(const Duration(seconds: 5), () async {
+      try {
+        await _notificationsPlugin.show(
+          id: testAlertId,
+          title: title,
+          body: body,
+          notificationDetails: notificationDetails,
+          payload: cardId,
+        );
+      } catch (err) {
+        print("Fallback show error: $err");
+      }
+    });
 
     // 3. Mark row as 'sent' in SQLite scheduled_notifications table (advances the pointer)
     await StorageService().markScheduledNotificationSent(rowId);
