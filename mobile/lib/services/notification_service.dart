@@ -121,7 +121,7 @@ class NotificationService {
 
     // Auto-mark tags as completed if all their cards have view_count > 0
     for (final tag in shuffledTags) {
-      final tagCards = cards.where((c) => c.tags.contains(tag)).toList();
+      final tagCards = cards.where((c) => c.tags.any((t) => t.trim().toLowerCase() == tag.trim().toLowerCase())).toList();
       if (tagCards.isNotEmpty && tagCards.every((c) => (counts[c.id] ?? 0) > 0)) {
         if (!completedTags.contains(tag)) {
           completedTags.add(tag);
@@ -243,7 +243,7 @@ class NotificationService {
       final tag = activeTags[(slotIndex - 1) % activeTags.length];
 
       // Get cards for tag, sorted by view count (unviewed first), then by card ID
-      final tagCards = cards.where((c) => c.tags.contains(tag)).toList();
+      final tagCards = cards.where((c) => c.tags.any((t) => t.trim().toLowerCase() == tag.trim().toLowerCase())).toList();
       tagCards.sort((a, b) {
         final viewA = counts[a.id] ?? 0;
         final viewB = counts[b.id] ?? 0;
@@ -328,7 +328,7 @@ class NotificationService {
     }
 
     // Get cards for tag, unviewed first, then by ID
-    final tagCards = cards.where((c) => c.tags.contains(tag)).toList();
+    final tagCards = cards.where((c) => c.tags.any((t) => t.trim().toLowerCase() == tag.trim().toLowerCase())).toList();
     tagCards.sort((a, b) {
       final viewA = counts[a.id] ?? 0;
       final viewB = counts[b.id] ?? 0;

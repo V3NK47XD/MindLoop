@@ -21,6 +21,7 @@ class _NotificationsViewState extends State<NotificationsView> {
   List<String> _completedTags = [];
   List<Flashcard> _cards = [];
   Map<String, int> _cardViewCounts = {};
+  int _globalStepPointer = 0;
   bool _isLoading = true;
   String _themeModeStr = 'light';
 
@@ -57,6 +58,7 @@ class _NotificationsViewState extends State<NotificationsView> {
         _frequencyHours = prefs.getInt('notification_frequency') ?? 3;
         _shuffledTags = prefs.getStringList('shuffled_hashtags') ?? [];
         _completedTags = prefs.getStringList('completed_hashtags') ?? [];
+        _globalStepPointer = prefs.getInt('global_rotation_step_pointer') ?? 0;
         _themeModeStr = prefs.getString('theme_mode') ?? 'light';
         _isLoading = false;
       });
@@ -121,12 +123,12 @@ class _NotificationsViewState extends State<NotificationsView> {
   }
 
   String? get _activeTag {
-    for (final tag in _shuffledTags) {
-      if (!_completedTags.contains(tag)) {
-        return tag;
-      }
+    final active = _shuffledTags.where((t) => !_completedTags.contains(t)).toList();
+    if (active.isEmpty && _shuffledTags.isNotEmpty) {
+      return _shuffledTags[_globalStepPointer % _shuffledTags.length];
     }
-    return _shuffledTags.isNotEmpty ? _shuffledTags.first : null;
+    if (active.isEmpty) return null;
+    return active[_globalStepPointer % active.length];
   }
 
   @override
@@ -366,7 +368,7 @@ class _NotificationsViewState extends State<NotificationsView> {
                                 children: _shuffledTags.map((tag) {
                                   final isCompleted = _completedTags.contains(tag);
                                   final isActive = tag == activeTag && !isCompleted;
-                                  final tagCards = _cards.where((c) => c.tags.contains(tag)).toList();
+                                  final tagCards = _cards.where((c) => c.tags.any((t) => t.trim().toLowerCase() == tag.trim().toLowerCase())).toList();
                                   final totalCount = tagCards.length;
                                   final viewedCount = tagCards.where((c) => (_cardViewCounts[c.id] ?? 0) > 0).length;
                                   final remainingCount = totalCount > viewedCount ? totalCount - viewedCount : 0;
