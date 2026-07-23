@@ -124,7 +124,6 @@ class NotificationService {
         if (!completedTags.contains(tag)) {
           completedTags.add(tag);
         }
-        await StorageService().markScheduledNotificationsForTagSent(tag);
       }
     }
 
@@ -163,6 +162,11 @@ class NotificationService {
   // Schedule rotational hashtag reminders into SQLite scheduled_notifications table & Flutter Local Notifications plugin
   // Cycle contains EXACTLY 1 slot per flashcard (e.g. 12 cards = 12 records), grouped by tag.
   Future<void> rescheduleReminders(int frequencyHours, {bool forceReset = false}) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (forceReset) {
+      await prefs.setStringList('completed_hashtags', []);
+    }
+
     // 1. Clear pending schedule queue in SQLite (preserves sent history unless forceReset = true)
     await StorageService().clearScheduledNotifications(clearSent: forceReset);
     await _notificationsPlugin.cancelAll();
@@ -180,7 +184,6 @@ class NotificationService {
       return;
     }
 
-    final prefs = await SharedPreferences.getInstance();
     List<String> shuffledTags = prefs.getStringList('shuffled_hashtags') ?? [];
     List<String> completedTags = prefs.getStringList('completed_hashtags') ?? [];
 
