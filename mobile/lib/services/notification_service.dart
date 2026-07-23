@@ -133,7 +133,6 @@ class NotificationService {
       completedTags = [];
       shuffledTags.shuffle();
       await prefs.setInt('global_rotation_step_pointer', 0);
-      await rescheduleReminders(prefs.getInt('notification_frequency') ?? 3, forceReset: true);
     }
 
     await prefs.setStringList('shuffled_hashtags', shuffledTags);
@@ -311,11 +310,25 @@ class NotificationService {
       });
     }
 
+    // 4. Add CYCLE_END_SENTINEL dummy record at the end of the cycle queue
+    final sentinelSlotOrder = maxSentOrder + scheduledItems.length + 1;
+    final sentinelTime = tz.TZDateTime.now(tz.local).add(Duration(hours: frequencyHours * (scheduledItems.length + 1)));
+    sqliteSlots.add({
+      'notification_id': 99999,
+      'card_id': 'CYCLE_END_SENTINEL',
+      'tag': 'CYCLE_END',
+      'title': 'Cycle Complete',
+      'body': 'All flashcards for this cycle have been reviewed!',
+      'scheduled_time': sentinelTime.toIso8601String(),
+      'slot_order': sentinelSlotOrder,
+      'status': 'pending',
+    });
+
     // Save batch to SQLite scheduled_notifications table
     if (sqliteSlots.isNotEmpty) {
       await StorageService().saveScheduledNotificationsBatch(sqliteSlots);
     }
-    print("Saved ${sqliteSlots.length} pending items to scheduled_notifications table in SQLite.");
+    print("Saved ${sqliteSlots.length} pending items (including sentinel) to scheduled_notifications table in SQLite.");
   }
 
   // "Send Next Notification" logic:
@@ -330,14 +343,17 @@ class NotificationService {
     // Fetch the single next pending notification from SQLite table pointer
     Map<String, dynamic>? nextItem = await StorageService().getNextPendingScheduledNotification();
 
-    // If queue is empty (all items in current cycle sent), auto-renew cycle and fetch again
-    if (nextItem == null) {
-      print("No pending scheduled notifications in SQLite. Generating new cycle...");
+    // If queue is empty OR if next item is the CYCLE_END_SENTINEL dummy record, auto-renew cycle!
+    if (nextItem == null || nextItem['card_id'] == 'CYCLE_END_SENTINEL') {
+      print("Reached end of scheduled notifications cycle. Auto-renewing for new cycle...");
+      if (nextItem != null && nextItem['id'] != null) {
+        await StorageService().markScheduledNotificationSent(nextItem['id'] as int);
+      }
       await rescheduleReminders(frequencyHours > 0 ? frequencyHours : 3, forceReset: true);
       nextItem = await StorageService().getNextPendingScheduledNotification();
     }
 
-    if (nextItem == null) return null;
+    if (nextItem == null || nextItem['card_id'] == 'CYCLE_END_SENTINEL') return null;
 
     final int rowId = nextItem['id'] as int;
     final int notificationId = nextItem['notification_id'] as int;

@@ -23,7 +23,8 @@ class _ScheduledNotificationsViewState extends State<ScheduledNotificationsView>
 
   Future<void> _loadScheduledList() async {
     await NotificationService().updateNotificationProgress();
-    final list = await StorageService().getScheduledNotifications();
+    final rawList = await StorageService().getScheduledNotifications();
+    final list = rawList.where((item) => item['card_id'] != 'CYCLE_END_SENTINEL').toList();
     if (mounted) {
       setState(() {
         _scheduledList = list;
