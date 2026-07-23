@@ -20,14 +20,16 @@ class Flashcard {
   });
 
   factory Flashcard.fromJson(Map<String, dynamic> json, String folderPath) {
+    final rawTags = List<dynamic>.from(json['tags'] ?? []);
+    final rawAttachments = List<dynamic>.from(json['attachments'] ?? []);
     return Flashcard(
       id: json['id'] as String,
       question: json['question'] as String,
       createdAt: json['created_at'] as String,
-      tags: List<String>.from(json['tags'] ?? []),
+      tags: rawTags.map((t) => t.toString().trim()).where((t) => t.isNotEmpty).toList(),
       sourcePdf: json['source_pdf'] as String? ?? '',
       pdfRefLine: json['pdf_ref_line'] as int? ?? 0,
-      attachments: List<String>.from(json['attachments'] ?? []),
+      attachments: rawAttachments.map((a) => a.toString().trim()).where((a) => a.isNotEmpty).toList(),
       folderPath: folderPath,
     );
   }

@@ -52,13 +52,26 @@ class _NotificationsViewState extends State<NotificationsView> {
       } catch (_) {}
     }
 
+    final rawShuffled = prefs.getStringList('shuffled_hashtags') ?? [];
+    final rawCompleted = prefs.getStringList('completed_hashtags') ?? [];
+
+    // Filter out orphan tags that no longer have cards in database
+    final shuffled = rawShuffled.where((tag) {
+      final norm = tag.trim().toLowerCase();
+      return cards.any((c) => c.tags.any((t) => t.trim().toLowerCase() == norm));
+    }).toList();
+    final completed = rawCompleted.where((tag) {
+      final norm = tag.trim().toLowerCase();
+      return cards.any((c) => c.tags.any((t) => t.trim().toLowerCase() == norm));
+    }).toList();
+
     if (mounted) {
       setState(() {
         _cards = cards;
         _cardViewCounts = counts;
         _frequencyHours = prefs.getInt('notification_frequency') ?? 3;
-        _shuffledTags = prefs.getStringList('shuffled_hashtags') ?? [];
-        _completedTags = prefs.getStringList('completed_hashtags') ?? [];
+        _shuffledTags = shuffled;
+        _completedTags = completed;
         _globalStepPointer = prefs.getInt('global_rotation_step_pointer') ?? 0;
         _themeModeStr = prefs.getString('theme_mode') ?? 'light';
         _isLoading = false;

@@ -104,6 +104,10 @@ class NotificationService {
     List<String> shuffledTags = prefs.getStringList('shuffled_hashtags') ?? [];
     List<String> completedTags = prefs.getStringList('completed_hashtags') ?? [];
 
+    // Filter out orphan tags that no longer exist in current cards
+    shuffledTags = shuffledTags.where((tag) => _cardsForTag(cards, tag).isNotEmpty).toList();
+    completedTags = completedTags.where((tag) => _cardsForTag(cards, tag).isNotEmpty).toList();
+
     // Reconcile tag set
     final setA = allHashtags.map(_normalizeTag).toSet();
     final setB = shuffledTags.map(_normalizeTag).toSet();
@@ -166,6 +170,7 @@ class NotificationService {
   }
 
   // Schedule rotational hashtag reminders into SQLite scheduled_notifications table & Flutter Local Notifications plugin
+  // Cycle contains EXACTLY 1 slot per flashcard (e.g. 12 cards = 12 records), grouped by tag.
   Future<void> rescheduleReminders(int frequencyHours) async {
     // 1. Clear existing schedule queue in SQLite and Plugin
     await StorageService().clearScheduledNotifications();
@@ -200,10 +205,6 @@ class NotificationService {
       return;
     }
 
-    // 3. Calculate total slots for 7 days (max 48 safety limit)
-    int slotsCount = (7 * 24 / frequencyHours).floor();
-    if (slotsCount > 48) slotsCount = 48;
-
     const androidDetails = AndroidNotificationDetails(
       'mindloop_reminders',
       'MindLoop Reminders',
@@ -231,14 +232,12 @@ class NotificationService {
       } catch (_) {}
     }
 
-    print("Building $slotsCount scheduled notifications in SQLite table scheduled_notifications every $frequencyHours hours...");
+    // Group all flashcards by tag in active tag rotation order.
+    // Cycle length is EXACTLY equal to the total number of flashcards (e.g. 12 cards = 12 records)
+    List<Map<String, dynamic>> scheduledItems = [];
+    Set<String> processedCardIds = {};
 
-    List<Map<String, dynamic>> sqliteSlots = [];
-    Map<String, int> tagPointers = {};
-
-    for (int slotIndex = 1; slotIndex <= slotsCount; slotIndex++) {
-      final tag = activeTags[(slotIndex - 1) % activeTags.length];
-
+    for (final tag in activeTags) {
       final tagCards = _cardsForTag(cards, tag);
       tagCards.sort((a, b) {
         final viewA = counts[a.id] ?? 0;
@@ -247,11 +246,37 @@ class NotificationService {
         return a.id.compareTo(b.id);
       });
 
-      if (tagCards.isEmpty) continue;
+      for (final card in tagCards) {
+        if (!processedCardIds.contains(card.id)) {
+          processedCardIds.add(card.id);
+          scheduledItems.add({
+            'card': card,
+            'tag': tag,
+          });
+        }
+      }
+    }
 
-      final ptr = tagPointers[tag] ?? 0;
-      final card = tagCards[ptr % tagCards.length];
-      tagPointers[tag] = ptr + 1;
+    // Include any remaining cards not covered by activeTags
+    for (final card in cards) {
+      if (!processedCardIds.contains(card.id)) {
+        processedCardIds.add(card.id);
+        final firstTag = card.tags.isNotEmpty ? card.tags.first.trim() : 'general';
+        scheduledItems.add({
+          'card': card,
+          'tag': firstTag,
+        });
+      }
+    }
+
+    print("Building cycle schedule of ${scheduledItems.length} notifications (1 per flashcard, grouped by tag)...");
+
+    List<Map<String, dynamic>> sqliteSlots = [];
+    for (int i = 0; i < scheduledItems.length; i++) {
+      final slotIndex = i + 1;
+      final item = scheduledItems[i];
+      final card = item['card'] as Flashcard;
+      final tag = item['tag'] as String;
 
       final scheduledTime = tz.TZDateTime.now(tz.local).add(Duration(hours: frequencyHours * slotIndex));
       final title = 'MindLoop Review - #$tag';
