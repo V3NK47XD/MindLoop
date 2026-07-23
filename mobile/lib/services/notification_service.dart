@@ -164,16 +164,16 @@ class NotificationService {
       final frequencyHours = prefs.getInt('notification_frequency') ?? 3;
       if (frequencyHours > 0) {
         print("Scheduled notifications queue exhausted. Auto-renewing cycle schedule...");
-        await rescheduleReminders(frequencyHours);
+        await rescheduleReminders(frequencyHours, forceReset: true);
       }
     }
   }
 
   // Schedule rotational hashtag reminders into SQLite scheduled_notifications table & Flutter Local Notifications plugin
   // Cycle contains EXACTLY 1 slot per flashcard (e.g. 12 cards = 12 records), grouped by tag.
-  Future<void> rescheduleReminders(int frequencyHours) async {
-    // 1. Clear existing schedule queue in SQLite and Plugin
-    await StorageService().clearScheduledNotifications();
+  Future<void> rescheduleReminders(int frequencyHours, {bool forceReset = false}) async {
+    // 1. Clear pending schedule queue in SQLite (preserves sent history unless forceReset = true)
+    await StorageService().clearScheduledNotifications(clearSent: forceReset);
     await _notificationsPlugin.cancelAll();
     await StorageService().clearFutureNotifications();
 
@@ -232,10 +232,23 @@ class NotificationService {
       } catch (_) {}
     }
 
-    // Group all flashcards by tag in active tag rotation order.
-    // Cycle length is EXACTLY equal to the total number of flashcards (e.g. 12 cards = 12 records)
+    // Read existing items in SQLite to preserve sent history
+    final existingItems = await StorageService().getScheduledNotifications();
+    final Set<String> processedCardIds = existingItems
+        .where((i) => i['status'] == 'sent')
+        .map((i) => i['card_id'] as String)
+        .toSet();
+
+    int maxSentOrder = 0;
+    for (final item in existingItems) {
+      if (item['status'] == 'sent') {
+        final order = item['slot_order'] as int? ?? 0;
+        if (order > maxSentOrder) maxSentOrder = order;
+      }
+    }
+
+    // Group remaining un-sent flashcards by tag in active tag rotation order
     List<Map<String, dynamic>> scheduledItems = [];
-    Set<String> processedCardIds = {};
 
     for (final tag in activeTags) {
       final tagCards = _cardsForTag(cards, tag);
@@ -269,16 +282,16 @@ class NotificationService {
       }
     }
 
-    print("Building cycle schedule of ${scheduledItems.length} notifications (1 per flashcard, grouped by tag)...");
+    print("Building remaining cycle schedule of ${scheduledItems.length} notifications (starting slot #${maxSentOrder + 1})...");
 
     List<Map<String, dynamic>> sqliteSlots = [];
     for (int i = 0; i < scheduledItems.length; i++) {
-      final slotIndex = i + 1;
+      final slotIndex = maxSentOrder + i + 1;
       final item = scheduledItems[i];
       final card = item['card'] as Flashcard;
       final tag = item['tag'] as String;
 
-      final scheduledTime = tz.TZDateTime.now(tz.local).add(Duration(hours: frequencyHours * slotIndex));
+      final scheduledTime = tz.TZDateTime.now(tz.local).add(Duration(hours: frequencyHours * (i + 1)));
       final title = 'MindLoop Review - #$tag';
       final body = card.question;
 
@@ -307,8 +320,10 @@ class NotificationService {
     }
 
     // Save batch to SQLite scheduled_notifications table
-    await StorageService().saveScheduledNotificationsBatch(sqliteSlots);
-    print("Saved ${sqliteSlots.length} items to scheduled_notifications table in SQLite.");
+    if (sqliteSlots.isNotEmpty) {
+      await StorageService().saveScheduledNotificationsBatch(sqliteSlots);
+    }
+    print("Saved ${sqliteSlots.length} pending items to scheduled_notifications table in SQLite.");
   }
 
   // "Send Next Notification" logic:
@@ -385,7 +400,7 @@ class NotificationService {
     // 6. If queue is now empty, renew schedule for next cycle
     final remainingCount = await StorageService().getPendingScheduledNotificationsCount();
     if (remainingCount == 0 && frequencyHours > 0) {
-      await rescheduleReminders(frequencyHours);
+      await rescheduleReminders(frequencyHours, forceReset: true);
     }
 
     print("Next notification sent from SQLite queue (Row #$rowId | Tag #$tag | Card: $cardId). Firing in 5s!");

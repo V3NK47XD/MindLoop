@@ -378,10 +378,18 @@ class StorageService {
     await batch.commit(noResult: true);
   }
 
-  // Clear all scheduled notifications (e.g., on cycle reset or reschedule)
-  Future<void> clearScheduledNotifications() async {
+  // Clear scheduled notifications (if clearSent is false, preserves sent history)
+  Future<void> clearScheduledNotifications({bool clearSent = false}) async {
     final db = await database;
-    await db.delete('scheduled_notifications');
+    if (clearSent) {
+      await db.delete('scheduled_notifications');
+    } else {
+      await db.delete(
+        'scheduled_notifications',
+        where: 'status = ?',
+        whereArgs: ['pending'],
+      );
+    }
   }
 
   // Get all scheduled notifications (optionally filter pending only)

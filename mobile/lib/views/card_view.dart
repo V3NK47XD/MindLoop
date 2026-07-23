@@ -78,9 +78,8 @@ class _CardViewState extends State<CardView> {
 
       await prefs.setString('card_view_counts', jsonEncode(counts));
 
-      // Trigger notification rescheduling immediately
-      final frequencyHours = prefs.getInt('notification_frequency') ?? 3;
-      await NotificationService().rescheduleReminders(frequencyHours);
+      // Update notification progress after viewing a card
+      await NotificationService().updateNotificationProgress();
     } catch (e) {
       print("Error saving view count: $e");
     }

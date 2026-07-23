@@ -36,7 +36,7 @@ class _ScheduledNotificationsViewState extends State<ScheduledNotificationsView>
     setState(() => _isLoading = true);
     final prefs = await SharedPreferences.getInstance();
     final frequencyHours = prefs.getInt('notification_frequency') ?? 3;
-    await NotificationService().rescheduleReminders(frequencyHours > 0 ? frequencyHours : 3);
+    await NotificationService().rescheduleReminders(frequencyHours > 0 ? frequencyHours : 3, forceReset: true);
     await _loadScheduledList();
   }
 
