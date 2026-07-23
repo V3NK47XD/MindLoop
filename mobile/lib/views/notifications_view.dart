@@ -19,7 +19,8 @@ class _NotificationsViewState extends State<NotificationsView> {
   int _frequencyHours = 3; // Default every 3 hours
   List<String> _shuffledTags = [];
   List<String> _completedTags = [];
-  List<String> _fullyViewedTags = [];
+  List<Flashcard> _cards = [];
+  Map<String, int> _cardViewCounts = {};
   bool _isLoading = true;
   String _themeModeStr = 'light';
 
@@ -49,25 +50,13 @@ class _NotificationsViewState extends State<NotificationsView> {
       } catch (_) {}
     }
 
-    final Set<String> fullyViewedTags = {};
-    final Map<String, List<Flashcard>> cardsByTag = {};
-    for (final card in cards) {
-      for (final tag in card.tags) {
-        cardsByTag.putIfAbsent(tag, () => []).add(card);
-      }
-    }
-    cardsByTag.forEach((tag, tagCards) {
-      if (tagCards.isNotEmpty && tagCards.every((c) => (counts[c.id] ?? 0) > 0)) {
-        fullyViewedTags.add(tag);
-      }
-    });
-
     if (mounted) {
       setState(() {
+        _cards = cards;
+        _cardViewCounts = counts;
         _frequencyHours = prefs.getInt('notification_frequency') ?? 3;
         _shuffledTags = prefs.getStringList('shuffled_hashtags') ?? [];
         _completedTags = prefs.getStringList('completed_hashtags') ?? [];
-        _fullyViewedTags = fullyViewedTags.toList();
         _themeModeStr = prefs.getString('theme_mode') ?? 'light';
         _isLoading = false;
       });
@@ -377,6 +366,11 @@ class _NotificationsViewState extends State<NotificationsView> {
                                 children: _shuffledTags.map((tag) {
                                   final isCompleted = _completedTags.contains(tag);
                                   final isActive = tag == activeTag && !isCompleted;
+                                  final tagCards = _cards.where((c) => c.tags.contains(tag)).toList();
+                                  final totalCount = tagCards.length;
+                                  final viewedCount = tagCards.where((c) => (_cardViewCounts[c.id] ?? 0) > 0).length;
+                                  final remainingCount = totalCount > viewedCount ? totalCount - viewedCount : 0;
+
                                   return InkWell(
                                     onTap: () => _toggleTagCompletion(tag, !isCompleted),
                                     borderRadius: BorderRadius.circular(4),
@@ -411,7 +405,7 @@ class _NotificationsViewState extends State<NotificationsView> {
                                           ),
                                           const SizedBox(width: 6),
                                           Text(
-                                            '#$tag',
+                                            '#$tag ($remainingCount left)',
                                             style: TextStyle(
                                               color: isCompleted 
                                                   ? Colors.green 
@@ -494,6 +488,7 @@ class _NotificationsViewState extends State<NotificationsView> {
                                     }
                                     return;
                                   }
+                                  await _loadSettingsAndChecklist();
                                   if (mounted) {
                                     final tagLabel = card.tags.isNotEmpty ? '#${card.tags.first}' : '';
                                     ScaffoldMessenger.of(context).showSnackBar(

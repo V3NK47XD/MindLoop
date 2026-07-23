@@ -89,6 +89,17 @@ class NotificationService {
     final cards = await StorageService().getAllCards();
     if (cards.isEmpty) return;
 
+    final countsRaw = prefs.getString('card_view_counts');
+    Map<String, int> counts = {};
+    if (countsRaw != null) {
+      try {
+        final Map<String, dynamic> decoded = jsonDecode(countsRaw);
+        decoded.forEach((key, val) {
+          if (val is int) counts[key] = val;
+        });
+      } catch (_) {}
+    }
+
     final allHashtags = cards
         .expand((c) => c.tags)
         .map((t) => t.trim())
@@ -100,15 +111,32 @@ class NotificationService {
     List<String> shuffledTags = prefs.getStringList('shuffled_hashtags') ?? [];
     List<String> completedTags = prefs.getStringList('completed_hashtags') ?? [];
 
-    // Reconcile active tag set
+    // Reconcile tag set
     final setA = allHashtags.toSet();
     final setB = shuffledTags.toSet();
     if (setA.length != setB.length || !setA.containsAll(setB)) {
       shuffledTags = List<String>.from(allHashtags)..shuffle();
       completedTags = [];
-      await prefs.setStringList('shuffled_hashtags', shuffledTags);
-      await prefs.setStringList('completed_hashtags', completedTags);
     }
+
+    // Auto-mark tags as completed if all their cards have view_count > 0
+    for (final tag in shuffledTags) {
+      final tagCards = cards.where((c) => c.tags.contains(tag)).toList();
+      if (tagCards.isNotEmpty && tagCards.every((c) => (counts[c.id] ?? 0) > 0)) {
+        if (!completedTags.contains(tag)) {
+          completedTags.add(tag);
+        }
+      }
+    }
+
+    // Reset round if all tags are marked completed
+    if (completedTags.length >= shuffledTags.length && shuffledTags.isNotEmpty) {
+      completedTags = [];
+      shuffledTags.shuffle();
+    }
+
+    await prefs.setStringList('shuffled_hashtags', shuffledTags);
+    await prefs.setStringList('completed_hashtags', completedTags);
 
     final slotsRaw = prefs.getString('scheduled_slots');
     if (slotsRaw != null) {
@@ -159,47 +187,23 @@ class NotificationService {
     List<String> shuffledTags = prefs.getStringList('shuffled_hashtags') ?? [];
     List<String> completedTags = prefs.getStringList('completed_hashtags') ?? [];
 
-    final allHashtags = cards
-        .expand((c) => c.tags)
-        .map((t) => t.trim())
-        .where((t) => t.isNotEmpty)
-        .toSet()
-        .toList();
-    allHashtags.sort();
-
-    // Reconcile active tag set
-    final setA = allHashtags.toSet();
-    final setB = shuffledTags.toSet();
-    if (setA.length != setB.length || !setA.containsAll(setB)) {
-      shuffledTags = List<String>.from(allHashtags)..shuffle();
+    List<String> activeTags = shuffledTags.where((t) => !completedTags.contains(t)).toList();
+    if (activeTags.isEmpty && shuffledTags.isNotEmpty) {
       completedTags = [];
-      await prefs.setStringList('shuffled_hashtags', shuffledTags);
+      activeTags = List<String>.from(shuffledTags);
       await prefs.setStringList('completed_hashtags', completedTags);
     }
 
-    if (shuffledTags.isEmpty) {
-      print("No hashtags found to schedule reminders.");
+    if (activeTags.isEmpty) {
+      print("No active hashtags found to schedule reminders.");
       return;
-    }
-
-    // Reset round if all tags are marked completed
-    bool completedChanged = false;
-    if (completedTags.length >= shuffledTags.length && shuffledTags.isNotEmpty) {
-      completedTags = [];
-      shuffledTags.shuffle();
-      completedChanged = true;
-    }
-
-    if (completedChanged) {
-      await prefs.setStringList('shuffled_hashtags', shuffledTags);
-      await prefs.setStringList('completed_hashtags', completedTags);
     }
 
     // 4. Calculate total slots for 7 days
     int slotsCount = (7 * 24 / frequencyHours).floor();
     if (slotsCount > 48) slotsCount = 48; // Android safety cap
 
-    final androidDetails = const AndroidNotificationDetails(
+    const androidDetails = AndroidNotificationDetails(
       'mindloop_reminders',
       'MindLoop Reminders',
       channelDescription: 'Rotational hashtag flashcard alerts',
@@ -208,30 +212,12 @@ class NotificationService {
       playSound: true,
       largeIcon: DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
     );
-    final iosDetails = const DarwinNotificationDetails(
+    const iosDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentBadge: true,
       presentSound: true,
     );
-    final notificationDetails = NotificationDetails(android: androidDetails, iOS: iosDetails);
-
-    // 5. Generate rotational schedule sequence for the active tag group
-    List<Map<String, dynamic>> scheduledSlotsData = [];
-    int slotIndex = 1;
-
-    // Find the active tag (first incomplete tag)
-    String? activeTag;
-    for (final tag in shuffledTags) {
-      if (!completedTags.contains(tag)) {
-        activeTag = tag;
-        break;
-      }
-    }
-
-    if (activeTag == null) {
-      print("All tags completed, could not resolve active tag.");
-      return;
-    }
+    const notificationDetails = NotificationDetails(android: androidDetails, iOS: iosDetails);
 
     // Load view counts for prioritizing unviewed cards
     final countsRaw = prefs.getString('card_view_counts');
@@ -247,32 +233,36 @@ class NotificationService {
       } catch (_) {}
     }
 
-    // Get cards under activeTag and sort: unviewed cards first
-    final tagCards = cards.where((c) => c.tags.contains(activeTag)).toList();
-    tagCards.sort((a, b) {
-      final viewA = counts[a.id] ?? 0;
-      final viewB = counts[b.id] ?? 0;
-      return viewA.compareTo(viewB);
-    });
+    print("Scheduling next $slotsCount reminders, every $frequencyHours hours... (Active Tags: $activeTags)");
 
-    if (tagCards.isEmpty) {
-      print("No cards found for active tag: $activeTag");
-      return;
-    }
+    List<Map<String, dynamic>> scheduledSlotsData = [];
+    Map<String, int> tagPointers = {};
 
-    print("Scheduling next $slotsCount reminders, every $frequencyHours hours... (Active Tag: $activeTag)");
+    for (int slotIndex = 1; slotIndex <= slotsCount; slotIndex++) {
+      // Pick active tag in rotation
+      final tag = activeTags[(slotIndex - 1) % activeTags.length];
 
-    int cardIndex = 0;
-    while (slotIndex <= slotsCount) {
-      final card = tagCards[cardIndex % tagCards.length];
-      cardIndex++;
+      // Get cards for tag, sorted by view count (unviewed first), then by card ID
+      final tagCards = cards.where((c) => c.tags.contains(tag)).toList();
+      tagCards.sort((a, b) {
+        final viewA = counts[a.id] ?? 0;
+        final viewB = counts[b.id] ?? 0;
+        if (viewA != viewB) return viewA.compareTo(viewB);
+        return a.id.compareTo(b.id);
+      });
+
+      if (tagCards.isEmpty) continue;
+
+      final ptr = tagPointers[tag] ?? 0;
+      final card = tagCards[ptr % tagCards.length];
+      tagPointers[tag] = ptr + 1;
 
       final scheduledTime = tz.TZDateTime.now(tz.local).add(Duration(hours: frequencyHours * slotIndex));
 
       // Schedule local notification
       await _notificationsPlugin.zonedSchedule(
         id: slotIndex,
-        title: 'MindLoop Review - #$activeTag',
+        title: 'MindLoop Review - #$tag',
         body: card.question,
         scheduledDate: scheduledTime,
         notificationDetails: notificationDetails,
@@ -280,22 +270,20 @@ class NotificationService {
         payload: card.id,
       );
 
-      // Log notification history (now standardizes automatically to UTC inside logNotification)
+      // Log notification history
       await StorageService().logNotification(
         card.id,
-        'MindLoop Review - #$activeTag',
+        'MindLoop Review - #$tag',
         card.question,
         scheduledTime,
       );
 
       scheduledSlotsData.add({
         'time': scheduledTime.toIso8601String(),
-        'tag': activeTag,
-        'is_last_for_tag': false,
+        'tag': tag,
       });
 
-      print("Scheduled reminder #$slotIndex at $scheduledTime (Tag: $activeTag | Card: ${card.id})");
-      slotIndex++;
+      print("Scheduled reminder #$slotIndex at $scheduledTime (Tag: $tag | Card: ${card.id})");
     }
 
     // Save scheduled slots
@@ -304,6 +292,8 @@ class NotificationService {
 
   // Helper to schedule the next notification in rotation after a 5-second delay
   Future<Flashcard?> scheduleNextNotificationAfter5Seconds() async {
+    await updateNotificationProgress();
+
     final cards = await StorageService().getAllCards();
     if (cards.isEmpty) return null;
 
@@ -311,53 +301,21 @@ class NotificationService {
     List<String> shuffledTags = prefs.getStringList('shuffled_hashtags') ?? [];
     List<String> completedTags = prefs.getStringList('completed_hashtags') ?? [];
 
-    final allHashtags = cards
-        .expand((c) => c.tags)
-        .map((t) => t.trim())
-        .where((t) => t.isNotEmpty)
-        .toSet()
-        .toList();
-    allHashtags.sort();
-
-    // Reconcile active tag set
-    final setA = allHashtags.toSet();
-    final setB = shuffledTags.toSet();
-    if (setA.length != setB.length || !setA.containsAll(setB)) {
-      shuffledTags = List<String>.from(allHashtags)..shuffle();
+    List<String> activeTags = shuffledTags.where((t) => !completedTags.contains(t)).toList();
+    if (activeTags.isEmpty && shuffledTags.isNotEmpty) {
       completedTags = [];
-      await prefs.setStringList('shuffled_hashtags', shuffledTags);
+      activeTags = List<String>.from(shuffledTags);
       await prefs.setStringList('completed_hashtags', completedTags);
     }
+    if (activeTags.isEmpty) return null;
 
-    if (completedTags.length >= shuffledTags.length && shuffledTags.isNotEmpty) {
-      completedTags = [];
-      shuffledTags.shuffle();
-      await prefs.setStringList('shuffled_hashtags', shuffledTags);
-      await prefs.setStringList('completed_hashtags', completedTags);
-    }
+    // Get current global rotation step pointer
+    int stepPointer = prefs.getInt('global_rotation_step_pointer') ?? 0;
 
-    // Determine active tag (first uncompleted tag)
-    String? activeTag;
-    for (final tag in shuffledTags) {
-      if (!completedTags.contains(tag)) {
-        activeTag = tag;
-        break;
-      }
-    }
-    if (activeTag == null && shuffledTags.isNotEmpty) {
-      activeTag = shuffledTags.first;
-    }
+    // Pick tag from activeTags rotationally
+    final tag = activeTags[stepPointer % activeTags.length];
 
-    // Filter cards by active tag
-    List<Flashcard> tagCards = [];
-    if (activeTag != null) {
-      tagCards = cards.where((c) => c.tags.contains(activeTag)).toList();
-    }
-    if (tagCards.isEmpty) {
-      tagCards = cards;
-    }
-
-    // Sort by view count (unviewed first)
+    // Load view counts
     final countsRaw = prefs.getString('card_view_counts');
     Map<String, int> counts = {};
     if (countsRaw != null) {
@@ -368,20 +326,25 @@ class NotificationService {
         });
       } catch (_) {}
     }
+
+    // Get cards for tag, unviewed first, then by ID
+    final tagCards = cards.where((c) => c.tags.contains(tag)).toList();
     tagCards.sort((a, b) {
       final viewA = counts[a.id] ?? 0;
       final viewB = counts[b.id] ?? 0;
-      return viewA.compareTo(viewB);
+      if (viewA != viewB) return viewA.compareTo(viewB);
+      return a.id.compareTo(b.id);
     });
 
-    // Get current card index pointer
-    int currentIndex = prefs.getInt('next_notification_card_index') ?? 0;
-    final card = tagCards[currentIndex % tagCards.length];
+    final cardPointer = (stepPointer ~/ activeTags.length);
+    final card = tagCards.isNotEmpty
+        ? tagCards[cardPointer % tagCards.length]
+        : cards[stepPointer % cards.length];
 
-    // Increment pointer for next button tap
-    await prefs.setInt('next_notification_card_index', currentIndex + 1);
+    // Increment global step pointer for next tap
+    await prefs.setInt('global_rotation_step_pointer', stepPointer + 1);
 
-    final title = activeTag != null ? 'MindLoop Review - #$activeTag' : 'MindLoop Review!';
+    final title = 'MindLoop Review - #$tag';
     const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
       'mindloop_reminders',
       'MindLoop Reminders',
@@ -417,7 +380,7 @@ class NotificationService {
       card.question,
       scheduledTime,
     );
-    print("Scheduled next notification (#${activeTag ?? ''} - ${card.question}) to fire in 5 seconds at: $scheduledTime");
+    print("Scheduled next notification (#$tag - ${card.question}) to fire in 5 seconds at: $scheduledTime");
     return card;
   }
 }
